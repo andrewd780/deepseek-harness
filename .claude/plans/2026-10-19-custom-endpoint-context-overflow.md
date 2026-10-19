@@ -72,6 +72,25 @@ Reproduction: `packages/compaction/compaction-basic/tests/provider-window-overfl
 3. Learned window: parse stated limits from overflow errors, size folds directly, and tell the user the configured window is wrong.
 4. Classifier additions for the misclassified wordings.
 
+## Andrew's answers (2026-10-19, second question round)
+
+- Push: skip the pre-push hook for this push (authorized once); pushed `86bdfeef6`, draft PR andrewd780/deepseek-harness#1, subscribed.
+- Server: **Ollama**, limited to a **32k** context. Fields: **left blank**. When: a **long chat pursuing a goal** (`/goal`).
+
+## Ollama facts (upstream source read as data)
+
+- `server/prompt.go` `chatPrompt`: with `truncate` on, drops the oldest messages (keeps system messages and the newest message) until the rendered prompt fits `num_ctx`, silently. The OpenAI-compatible layer never sets `truncate`, so it is on; context shift is on. Default `num_ctx` is VRAM-tiered: 262,144 (≥47 GiB), 32,768 (≥23 GiB), else 4,096.
+- pi-ai: Ollama "may truncate input silently for some setups, but may also return explicit overflow errors" (`prompt too long; exceeded max context length by X tokens`, classified by both classifiers). Andrew saw an error, so an explicit path occurred; silent truncation likely dropped the goal earlier without the harness knowing.
+
+## Small-window arithmetic (default headroom 65,536, O = 0)
+
+- `retain ≥ threshold` whenever `W − O ≤ 78,019`, so proactive compaction is disabled for 32k and 64k windows even when declared correctly; just above, the trigger is absurdly early (W = 81,920 → threshold 16,384).
+- Candidate default with no new tunable: headroom = `min(65,536, floor((W − O) × (1 − thresholdRatio)))` → W 32,768: threshold 26,214, cap 6,553; W 1,000,000/O 256,000: unchanged 678,464; W 262,144/O 0: 196,608 → 209,715 (changes the blank-field pi-ai trigger).
+
+## Council round 2 (seated 2026-10-19)
+
+- Motion: A) a correctly declared small window compacts proactively under default settings; B) obtain the real window from the endpoint (discovery) or a stated limit, and tell the user which field to fix; C) detect silent truncation from reported prompt tokens; D) pi-ai output-reservation clamp.
+
 ## Process
 
 1. Diagnose with three parallel investigators (config path, classification, recovery) plus own reading.

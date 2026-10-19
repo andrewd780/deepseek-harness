@@ -9,8 +9,8 @@ import z from '@deepseek-ai/schemastery'
 import { CompactionEngine, ManualCompactionError } from '@deepseek-ai/dsh-compaction'
 import type { CompactionResult, CompactionTrigger } from '@deepseek-ai/dsh-compaction'
 import type { Session, SessionSeq } from '@deepseek-ai/dsh-session'
-import { CONTEXT_WINDOW_EXCEEDED_CODE, isHarnessError } from '@deepseek-ai/dsh-llm'
-import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
+import { CONTEXT_WINDOW_EXCEEDED_CODE, errorChain, isHarnessError } from '@deepseek-ai/dsh-llm'
+import type { LlmCallConfig, LlmResolvedModelInfo } from '@deepseek-ai/dsh-llm'
 import { assertNever } from '@deepseek-ai/dsh-util-values'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
@@ -19,6 +19,7 @@ import type {} from '@deepseek-ai/dsh-compaction-tool-result-pruner'
 import {
   resolveCompactSpec,
   resolveConfig,
+  resolveSummaryCap,
   resolveTargetPolicy,
   TargetPressureConfigError,
 } from './config.ts'
@@ -431,7 +432,7 @@ export class BasicCompactionEngine extends CompactionEngine {
       start,
       end,
       agent,
-      { owner: 'current-turn', stability: 'whole-surface', maxTokens: this.summaryPolicy(agent).maxTokens },
+      { owner: 'current-turn', stability: 'whole-surface', maxTokens: await this.summaryCap(agent, signal) },
       signal,
     )
   }
@@ -513,7 +514,7 @@ export class BasicCompactionEngine extends CompactionEngine {
     const dependencies = this.regionDependencies()
     let bound: SummaryBound = {
       spanTokens: Number.POSITIVE_INFINITY,
-      maxTokens: this.summaryPolicy(agent).maxTokens,
+      maxTokens: await this.summaryCap(agent, signal),
     }
     let foldCheckpoint: SessionSeq | undefined
     let result: CompactionResult | null = null
@@ -558,6 +559,38 @@ export class BasicCompactionEngine extends CompactionEngine {
   private summaryPolicy(agent: Agent): ResolvedConfig | ResolvedTargetPolicy {
     const target = conversationTarget(agent)
     return target === undefined ? this.config : resolveTargetPolicy(this.config, target)
+  }
+
+  /**
+   * Generation cap for the next summary of the agent's conversation: the
+   * configured cap, or the headroom derived from the routed model's window
+   * and output reservation. A window lookup that fails is treated as an
+   * unknown window; a summary that then does not fit is shrunk by the caller.
+   * @param agent - agent whose conversation target and request envelope size the cap.
+   * @param signal - cancellation forwarded to the model-info lookup.
+   * @returns positive summary generation cap.
+   */
+  private async summaryCap(agent: Agent, signal?: AbortSignal): Promise<number> {
+    const target = conversationTarget(agent)
+    const policy = this.summaryPolicy(agent)
+    if (target === undefined || policy.maxTokens !== undefined) return resolveSummaryCap(policy, undefined)
+    let info: LlmResolvedModelInfo
+    try {
+      info = await this.ctx.llm.resolveModelInfo(target.provider, target.model, signal)
+    } catch (error: unknown) {
+      if (signal?.aborted) throw error
+      this.ctx.logger.warn(
+        `compaction: no context window for ${target.provider}/${target.model} (${errorChain(error)}); `
+        + 'sizing the summary cap as for an unknown window',
+      )
+      return resolveSummaryCap(policy, undefined)
+    }
+    return resolveSummaryCap(
+      policy,
+      info.context === undefined
+        ? undefined
+        : info.context.contextWindow - reservedCompletionTokens(agent, info.defaultMaxTokens),
+    )
   }
 
   /** Bind the effective token meter and dynamically dispatched summarizer hook. */

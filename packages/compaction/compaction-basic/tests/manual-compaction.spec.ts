@@ -269,8 +269,10 @@ describe('compactNow through the real loop', () => {
     compact.gate = gate.promise
 
     const running = compact.compactNow(agent, SIGNAL)
-    await Promise.resolve()
-    expect(log).toEqual(['compaction/start:null'])
+    // The routed window lookup that sizes the summary cap precedes the marker.
+    await vi.waitFor(() => {
+      expect(log).toEqual(['compaction/start:null'])
+    })
     agent.followup(createUserMessage({
       content: [{ type: 'text', text: 'after compaction' }],
       source: { kind: 'user' },
@@ -587,8 +589,9 @@ describe('compactNow transaction and failure classification', () => {
     const generation = session.surface.replaceGeneration
 
     const running = compact.compactNow(agent, SIGNAL)
-    await Promise.resolve()
-    expect(compact.calls).toHaveLength(1)
+    await vi.waitFor(() => {
+      expect(compact.calls).toHaveLength(1)
+    })
 
     gate.resolve()
     queueMicrotask(() => {

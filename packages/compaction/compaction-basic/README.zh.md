@@ -59,23 +59,23 @@ kind: "package-reference"
 
 ### 调整压缩开始的时机
 
-所有设置都可选。设上下文窗口为 `W`、生效请求输出上限为 `O`、余量为 `B`，默认触发阈值为 `floor(min(W × 0.8, W − O − B))`，其中 `B = 65,536` tokens。逐字保留的近期历史预算仍为 `W − O` 的 16%。下表列出全部设置；生成的[配置目录](../../../docs/config-catalog.zh.md#deepseek-aidsh-compaction-basic)还包含字段类型。
+所有设置都可选。设上下文窗口为 `W`、生效请求输出上限为 `O`、余量为 `B`，默认触发阈值为 `floor(min(W × 0.8, W − O − B))`。未设置的余量按消息预算 `M = W − O` 推导：`B = min(65,536, M − floor(thresholdRatio × min(M, 65,536)))`。在默认比例下，`M` 不小于 117,964 tokens 时 `B` 保持 65,536；更小的窗口仍会主动压缩：没有输出预留的 32,768-token 窗口在 26,214 tokens 时压缩，摘要上限为 6,554 tokens。逐字保留的近期历史预算仍为 `W − O` 的 16%。下表列出全部设置；生成的[配置目录](../../../docs/config-catalog.zh.md#deepseek-aidsh-compaction-basic)还包含字段类型。
 
 | 字段 | 默认值 | 含义 |
 |---|---|---|
 | `thresholdRatio` | `0.8` | 用于 `floor(min(W × thresholdRatio, W − O − headroomTokens))` 的窗口比例。 |
-| `headroomTokens` | `65536` | 路由请求输出预留之外的额外压力余量；必须为非负整数。 |
+| `headroomTokens` | 推导值，不超过 `65536` | 路由请求输出预留之外的额外压力余量；必须为非负整数。未设置时按上文从每个路由目标的消息预算推导。 |
 | `retainRatio` | `0.16` | 以 `W − O` 的一部分表示逐字保留的近期对话；与 `retainTokens` 互斥。 |
 | `retainTokens` | — | 逐字保留的近期对话绝对预算；与 `retainRatio` 互斥，并且必须低于已解析阈值。 |
 | `summarizationProvider` | `''` | 与 `summarizationModel` 一起设置；空对使用最新已路由请求目标，再回退到 `AgentOptions` 对。 |
 | `summarizationModel` | `''` | 与 `summarizationProvider` 一起设置；空对使用最新已路由请求目标，再回退到 `AgentOptions` 对。 |
-| `maxTokens` | `headroomTokens`（`65536`） | 正数摘要输出上限，包含提供方计入的推理 token。显式模型上限覆盖显式全局上限；否则跟随解析后的余量。 |
+| `maxTokens` | 解析后的 `headroomTokens` | 正数摘要输出上限，包含提供方计入的推理 token。显式模型上限覆盖显式全局上限；否则跟随解析后的余量；路由窗口未知，或 `thresholdRatio: 1` 使推导余量为零时为 `65536`。 |
 | `compactionRetries` | `1` | 压力仍高于阈值时，在首次压缩后进行的额外尝试次数。 |
 | `maxOverflowRetries` | `1` | 已确认上下文窗口溢出后的最大重试次数；`0` 只禁用恢复。 |
 | `modelPolicies` | `[]` | 针对个别模型路由的精确 `{ provider, model, ...partialPolicy }` 覆盖。 |
 | `auto` | `true` | 启用自动压缩与溢出恢复；设为 `false` 则仅手动执行。 |
 
-配置错误会快速失败：未知设置、重复的按模型覆盖、无效 token 数、两种保留形式同时出现，或保留比例不小于阈值比例，都会在加载时拒绝插件。模型首次使用时，`W − O − B` 必须为正，且解析出的保留预算必须低于触发阈值。余量为零时，必须在全局或对应模型策略中显式设置正数 `maxTokens`。小窗口部署必须配置适合其容量的余量；降低 `thresholdRatio` 可以提早压缩。
+配置错误会快速失败：未知设置、重复的按模型覆盖、无效 token 数、两种保留形式同时出现，或保留比例不小于阈值比例，都会在加载时拒绝插件。模型首次使用时，`W − O − B` 必须为正，且解析出的保留预算必须低于触发阈值。配置的余量为零时，必须在全局或对应模型策略中显式设置正数 `maxTokens`。显式配置的 `headroomTokens` 必须适合窗口；未设置的余量会按窗口推导。降低 `thresholdRatio` 可以提早压缩。
 
 ### 压缩运行时会发生什么
 
@@ -114,7 +114,7 @@ kind: "package-reference"
 
 当 `auto: true` 时，串行 `agent/pre-step` listener 会在请求派生前检查压力：它通过 `ctx.tokenMeter` 为最新持久路由请求 envelope 定价，当压力越过路由模型的阈值时，先剪枝，再在保留已定价近期尾部的同时摘要最旧的平衡范围。每个选定范围都从第一个不是 `system/message` 的 surface 节点开始，因此位于 surface 节点 0 的系统提示词永不会被遮蔽；由历史内提示词更新追加的后续 `system/message` 是普通历史，范围可以遮蔽它，agent loop（智能体循环）的投影随后会在二者文本不同时用当前提示词替换节点 0（[决策规则](../../core/agent-loop/README.zh.md#understand-the-implementation)）。`agent/request-error` listener 响应提供方确认的 `CONTEXT_WINDOW_EXCEEDED`：它绕过常规阈值与保留策略，把整个可压缩范围逐段并入摘要，并且只在表层替换 generation 前进后才授权重试。取消全程保持最终决定权。
 
-溢出恢复与 `compactNow()` 共用同一个逐段并入流程。它的第一个事务在策略上限下摘要整个可压缩范围。摘要请求因 `CONTEXT_WINDOW_EXCEEDED` 被拒绝后，若上限高于被拒范围的路由定价，则先降至该定价；否则范围预算减半，上限保持不高于预算。摘要在上限处被截断（`MAX_TOKENS`）后，范围预算减半，上限保持不变。后续事务在预算内摘要最长的、从最旧处开始的平衡前缀，且该前缀必须包含本流程自身检查点之外的历史，直到范围耗尽或没有前缀能放入预算为止。每次被拒后的请求都小于被拒的请求，因此流程必然结束。一旦已有事务提交，预算放不下任何前缀，或手动压缩出现 `summary` 或 `changed` 失败时，返回已提交的进展；其他失败照常传播。
+溢出恢复与 `compactNow()` 共用同一个逐段并入流程。它的第一个事务在解析后的摘要上限下摘要整个可压缩范围。摘要请求因 `CONTEXT_WINDOW_EXCEEDED` 被拒绝后，若上限高于被拒范围的路由定价，则先降至该定价；否则范围预算减半，上限保持不高于预算。摘要在上限处被截断（`MAX_TOKENS`）后，范围预算减半，上限保持不变。后续事务在预算内摘要最长的、从最旧处开始的平衡前缀，且该前缀必须包含本流程自身检查点之外的历史，直到范围耗尽或没有前缀能放入预算为止。每次被拒后的请求都小于被拒的请求，因此流程必然结束。一旦已有事务提交，预算放不下任何前缀，或手动压缩出现 `summary` 或 `changed` 失败时，返回已提交的进展；其他失败照常传播。
 
 压力策略从拥有持久路由的适配器解析容量。容量缺失、输出预留与余量耗尽窗口，或保留预算不小于阈值时，手动压力路径会抛出目标特定配置错误。自动 listener 会对该精确目标警告一次，并在配置修正前跳过主动压缩；提供方确认溢出后的恢复仍然可用。
 

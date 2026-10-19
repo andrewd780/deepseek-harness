@@ -1,0 +1,22 @@
+# Bilingual-pair consistency record for 2026-10-19-small-window-default-headroom.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-10-19-small-window-default-headroom.md
+/agent-note-unset-compaction-headroom-fits-small-context-windows:
+  en: 31ad0ab70c179011
+  zh: 874209032e770c16
+/agent-note-unset-compaction-headroom-fits-small-context-windows/problem:
+  en: 53e6238dfbad2483
+  zh: 29433ef213a1178b
+/agent-note-unset-compaction-headroom-fits-small-context-windows/decision:
+  en: 84a6c130f617599f
+  zh: 1ee5a4826352177b
+/agent-note-unset-compaction-headroom-fits-small-context-windows/alternatives-considered:
+  en: f3f9270f414b591e
+  zh: 572522ab4bd7d03c
+/agent-note-unset-compaction-headroom-fits-small-context-windows/consequences:
+  en: b17d2d6098d67162
+  zh: acb852311ee28c54
+/agent-note-unset-compaction-headroom-fits-small-context-windows/testing:
+  en: fbbf5dafae583388
+  zh: 70ac363048306bce

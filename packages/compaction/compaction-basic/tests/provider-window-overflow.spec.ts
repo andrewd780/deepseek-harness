@@ -311,8 +311,25 @@ describe('a correctly declared small provider window', () => {
     growth: { kind: 'tool-results', steps: 2, chars: 6_000 },
   }
 
-  it('retries a summary whose policy cap exceeds the window with a cap no larger than its span', async () => {
+  it('sizes the default summary cap to the window, so the first manual summary fits', async () => {
     const { ctx, adapter, engine } = await harness(shape, 'thrown')
+    try {
+      const agent = await ctx.agentLoop.create(SessionId('small-default'), { provider: 'custom', model: 'local' })
+      expect(await runTurn(ctx, agent, 'read two chunks')).toEqual({ kind: 'completed' })
+
+      const result = await engine.compactNow(agent, new AbortController().signal)
+
+      expect(result).not.toBeNull()
+      const summaries = adapter.requests.filter(request => request.purpose === 'compaction')
+      expect(summaries).toEqual([expect.objectContaining({ rejected: false, maxTokens: 5_735 })])
+      expectPairedCompactionLog(agent, adapter.requests)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('retries a summary whose configured cap exceeds the window with a cap no larger than its span', async () => {
+    const { ctx, adapter, engine } = await harness(shape, 'thrown', { maxTokens: 65_536 })
     try {
       const agent = await ctx.agentLoop.create(SessionId('small-manual'), { provider: 'custom', model: 'local' })
       expect(await runTurn(ctx, agent, 'read two chunks')).toEqual({ kind: 'completed' })
@@ -324,6 +341,33 @@ describe('a correctly declared small provider window', () => {
       expect(summaries.map(request => request.rejected)).toEqual([true, false])
       expect(summaries[0]).toMatchObject({ maxTokens: 65_536 })
       expect(summaries[1]!.maxTokens).toBeLessThan(summaries[1]!.inputTokens)
+      expectPairedCompactionLog(agent, adapter.requests)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+})
+
+describe('a correctly declared 32K prompt-only window under default settings', () => {
+  const shape: ProviderShape = {
+    declaredWindow: 32_768,
+    realWindow: 32_768,
+    defaultMaxTokens: 4_096,
+    enforcement: 'input',
+    growth: { kind: 'replies', chars: 6_000 },
+  }
+
+  it('compacts before the server rejects any request in a long chat', async () => {
+    const { ctx, adapter } = await harness(shape, 'thrown')
+    try {
+      const agent = await ctx.agentLoop.create(SessionId('small-pressure'), { provider: 'custom', model: 'local' })
+
+      expect(await chatUntilFailure(ctx, agent, 30)).toEqual({ kind: 'completed' })
+
+      expect(adapter.requests.filter(request => request.rejected)).toEqual([])
+      const summaries = adapter.requests.filter(request => request.purpose === 'compaction')
+      expect(summaries.length).toBeGreaterThan(1)
+      expect(new Set(summaries.map(request => request.maxTokens))).toEqual(new Set([5_735]))
       expectPairedCompactionLog(agent, adapter.requests)
     } finally {
       await ctx.fiber.dispose()

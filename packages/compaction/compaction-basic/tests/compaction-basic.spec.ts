@@ -315,16 +315,16 @@ describe('compact configuration and defaults', () => {
 
     expect(resolved).toEqual({
       thresholdRatio: 0.8,
-      headroomTokens: 65_536,
       retainRatio: 0.16,
       summarizationProvider: '',
       summarizationModel: '',
-      maxTokens: 65_536,
       compactionRetries: 1,
       maxOverflowRetries: 1,
       modelPolicies: [],
       auto: true,
     })
+    expect(resolved).not.toHaveProperty('headroomTokens')
+    expect(resolved).not.toHaveProperty('maxTokens')
     expect(Object.isFrozen(resolved)).toBe(true)
   })
 
@@ -444,6 +444,48 @@ describe('compact configuration and defaults', () => {
       thresholdTokens: threshold,
       retainTokens: retained,
     })
+  })
+
+  it.each([
+    [8_192, 0, 6_553, 1_310, 1_639],
+    [32_768, 0, 26_214, 5_242, 6_554],
+    [32_768, 4_096, 22_937, 4_587, 5_735],
+    [65_536, 0, 52_428, 10_485, 13_108],
+    [100_000, 0, 52_428, 16_000, 47_572],
+    [117_963, 0, 52_428, 18_874, 65_535],
+    [117_964, 0, 52_428, 18_874, 65_536],
+    [131_072, 0, 65_536, 20_971, 65_536],
+    [1_000_000, 256_000, 678_464, 119_040, 65_536],
+  ])('derives default headroom in window %i with output cap %i', (window, output, threshold, retained, summaryCap) => {
+    const policy = resolveTargetPolicy(resolveConfig({}), { provider: MODEL, model: MODEL })
+
+    expect(resolveCompactSpec(policy, window, output)).toMatchObject({
+      contextWindow: window,
+      thresholdTokens: threshold,
+      retainTokens: retained,
+      maxTokens: summaryCap,
+    })
+  })
+
+  it('keeps explicit headroom and an explicit summary cap in a small window', () => {
+    const target = { provider: MODEL, model: MODEL }
+
+    expect(resolveCompactSpec(resolveTargetPolicy(resolveConfig({ headroomTokens: 4_096 }), target), 32_768, 0))
+      .toMatchObject({ thresholdTokens: 26_214, maxTokens: 4_096 })
+    expect(resolveCompactSpec(resolveTargetPolicy(resolveConfig({ maxTokens: 2_048 }), target), 32_768, 0))
+      .toMatchObject({ thresholdTokens: 26_214, maxTokens: 2_048 })
+    expect(resolveCompactSpec(resolveTargetPolicy(resolveConfig({
+      modelPolicies: [{ provider: MODEL, model: MODEL, headroomTokens: 3_000 }],
+    }), target), 32_768, 0)).toMatchObject({ thresholdTokens: 26_214, maxTokens: 3_000 })
+  })
+
+  it('caps the summary at 65,536 tokens when the pressure ratio leaves no derived headroom', () => {
+    const policy = resolveTargetPolicy(
+      resolveConfig({ thresholdRatio: 1 }),
+      { provider: MODEL, model: MODEL },
+    )
+
+    expect(resolveCompactSpec(policy, 32_768, 0)).toMatchObject({ thresholdTokens: 32_768, maxTokens: 65_536 })
   })
 
   it.each([500, 501])('rejects headroom %i that exhausts the remaining capacity', (headroomTokens) => {
@@ -576,6 +618,101 @@ describe('compact configuration and defaults', () => {
     expect(() => resolveCompactSpec(invalidPressure, 0, 0)).toThrow(/positive integer/)
   })
 
+})
+
+describe('small routed windows under default settings', () => {
+  it('compacts a correctly declared 32K window at its derived threshold with the derived cap', async () => {
+    const ctx = createContext(32_768)
+    const compact = new TestCompactionEngine(ctx, { auto: false })
+    const session = conversation(3, 'word '.repeat(4_000).trim())
+    expect(ctx.tokenMeter.measure(session).totalTokens).toBeGreaterThanOrEqual(26_214)
+
+    const result = await compactIfNeeded(compact, session)
+
+    expect(result).not.toBeNull()
+    expect(compact.calls.map(call => call.input.maxTokens)).toEqual([6_554])
+    expect(ctx.tokenMeter.measure(session).totalTokens).toBeLessThan(26_214)
+  })
+
+  it.each([
+    [32_768, undefined, 6_554],
+    [32_768, 4_096, 5_735],
+    [1_000_000, undefined, 65_536],
+  ])('caps a region summary in a %i-token window with output cap %s at %i tokens', async (window, output, cap) => {
+    const compact = new TestCompactionEngine(createContext(window), { auto: false })
+    const session = conversation(3)
+    if (output !== undefined) {
+      session.append('request/header', {
+        header: { config: { provider: MODEL, model: MODEL, maxTokens: output } },
+        reason: 'resume',
+      })
+    }
+    const nodes = session.surface.nodes
+
+    await compact.compactRegion(nodes[0]!, nodes[1]!, agent(session, MODEL), SIGNAL)
+
+    expect(compact.calls[0]!.input.maxTokens).toBe(cap)
+  })
+
+  it('caps a region summary at 65,536 tokens when no routed window is known', async () => {
+    const ctx = createContext()
+    ctx.llm.registerAdapter(['windowless'], new RoutedContextAdapter({}))
+    const compact = new TestCompactionEngine(ctx, { auto: false })
+    const windowless = conversation(3)
+    windowless.append('request/header', {
+      header: { config: { provider: 'windowless', model: 'windowless' } },
+      reason: 'resume',
+    })
+    const unrouted = conversation(3)
+    unrouted.append('request/header', { header: { config: { provider: '', model: '' } }, reason: 'resume' })
+
+    await compact.compactRegion(windowless.surface.nodes[0]!, windowless.surface.nodes[1]!, agent(windowless), SIGNAL)
+    await compact.compactRegion(unrouted.surface.nodes[0]!, unrouted.surface.nodes[1]!, agent(unrouted), SIGNAL)
+
+    expect(compact.calls.map(call => call.input.maxTokens)).toEqual([65_536, 65_536])
+  })
+
+  it('warns and caps a region summary at 65,536 tokens when the window lookup fails', async () => {
+    const ctx = createContext()
+    const warnings: string[] = []
+    ctx.logger.warn = ((message: string) => void warnings.push(message)) as typeof ctx.logger.warn
+    ctx.llm.registerAdapter(['broken'], new class extends ContextAdapter {
+      override resolveModel(): Promise<LlmResolvedModelInfo> {
+        return Promise.reject(new Error('catalog unavailable'))
+      }
+    }(32_768))
+    const compact = new TestCompactionEngine(ctx, { auto: false })
+    const session = conversation(3)
+    session.append('request/header', { header: { config: { provider: 'broken', model: 'broken' } }, reason: 'resume' })
+
+    await compact.compactRegion(session.surface.nodes[0]!, session.surface.nodes[1]!, agent(session), SIGNAL)
+
+    expect(compact.calls[0]!.input.maxTokens).toBe(65_536)
+    expect(warnings).toEqual([expect.stringContaining('no context window for broken/broken (catalog unavailable)')])
+  })
+
+  it('rethrows a window lookup that cancellation interrupts', async () => {
+    const ctx = createContext()
+    const controller = new AbortController()
+    const reason = new Error('stop sizing')
+    ctx.llm.registerAdapter(['slow'], new class extends ContextAdapter {
+      override resolveModel(): Promise<LlmResolvedModelInfo> {
+        controller.abort(reason)
+        return Promise.reject(reason)
+      }
+    }(32_768))
+    const compact = new TestCompactionEngine(ctx, { auto: false })
+    const session = conversation(3)
+    session.append('request/header', { header: { config: { provider: 'slow', model: 'slow' } }, reason: 'resume' })
+
+    await expect(compact.compactRegion(
+      session.surface.nodes[0]!,
+      session.surface.nodes[1]!,
+      agent(session),
+      controller.signal,
+    )).rejects.toBe(reason)
+    expect(compact.calls).toEqual([])
+  })
 })
 
 describe('pressure measurement and retention', () => {

@@ -74,7 +74,7 @@ Reproduction: `packages/compaction/compaction-basic/tests/provider-window-overfl
 
 ## Andrew's answers (2026-10-19, second question round)
 
-- Push: skip the pre-push hook for this push (authorized once); pushed `86bdfeef6`, draft PR andrewd780/deepseek-harness#1, subscribed.
+- Push: skip the pre-push hook for this push (authorized once); pushed the branch, draft PR andrewd780/deepseek-harness#1, subscribed.
 - Server: **Ollama**, limited to a **32k** context. Fields: **left blank**. When: a **long chat pursuing a goal** (`/goal`).
 
 ## Ollama facts (upstream source read as data)
@@ -90,6 +90,32 @@ Reproduction: `packages/compaction/compaction-basic/tests/provider-window-overfl
 ## Council round 2 (seated 2026-10-19)
 
 - Motion: A) a correctly declared small window compacts proactively under default settings; B) obtain the real window from the endpoint (discovery) or a stated limit, and tell the user which field to fix; C) detect silent truncation from reported prompt tokens; D) pi-ai output-reservation clamp.
+
+## Andrew, 2026-10-19 (third message)
+
+- "Ollama doesn't have 1 m context can you fix that". Premise corrected in chat: with blank fields the custom-endpoint card believes 262,144 tokens; 1,000,000 is the DeepSeek card's default. Either way it is far above Ollama's 32k.
+
+## Council round 3 (2026-10-19): learning Ollama's served window — digest
+
+- Brief: scratchpad `council/brief-round3.md`. Seats: system design, challenger.
+- Verified in Ollama source: `/api/ps` `context_length` is `llama.ContextLength()` (`server/sched.go:1836`), the same value the scheduler writes into the request's `num_ctx` after load (`sched.go:743-744`) and that caps chat truncation (`routes.go` `optionsForPrompt`). An automatic `num_ctx` can also be lowered on a load OOM (`sched.go:701`), so only the loaded runner knows the served window. MLX-runner models never truncate (`routes.go` ~3261), so they fail with an explicit error instead.
+- Challenger: the shipped web profile's fixed prompt is about 7.8k tokens (system prompt plus 31 tool schemas, `snapshots/web/fresh-round-trip`), so an 8,192 window cannot work under any compaction setting; 32,768 leaves about 18.4k for conversation and compacts every 7-13k tokens. Strongest objection: a request sent while the window is unknown (cold model after a restart) is silently truncated; lever: refuse to send a request the served window cannot hold, as `CONTEXT_WINDOW_EXCEEDED`, so the existing recovery and fold take over (summary requests included).
+- System design: route field `servedContextProbe: 'auto' | 'off'` (default `auto`) on declared routes with a `baseURL` and an OpenAI or Anthropic protocol; probe on every `resolveModel`, share in-flight probes, keep the last learned value per route and model in memory; report `min(configured, served)` from `resolveModel`, `prepareCall`, and the stream (pi-ai clamp and usage overflow); leave discovery alone; warn once per narrowed value; mock server must answer `/api/ps` outside its script.
+- Chair's synthesis for iteration B: the probe as designed, plus the send-path guard using the learned window (no preloading of unloaded models; documented gap: the first request after a restart while the model is unloaded).
+
+## Status log, continued
+
+- 2026-10-19, iteration A committed (`fix(compaction): derive default headroom so small windows compact proactively`): derived default headroom and per-window summary cap in `compaction-basic`. Evidence: 12 new config/behavior tests and 2 real-loop tests fail on the previous source and pass now; 272 compaction tests pass; `compaction-basic/src` 100% statements/branches/functions/lines; oxlint clean on changed files; typecheck identical to baseline (only `exceljs`/`xlsx`); config catalog regenerated (`verify-config-catalog` was stale first); translation pairing 3 pairs consistent; Agent Note format 302 notes. Snapshot work (rework `compaction-summary-overflow`, add `compaction-small-window-defaults`) delegated and running.
+- 2026-10-19, snapshots committed (`test(snapshots): record small-window compaction and the summary fold`): `compaction-small-window-defaults` (32,768 window, one summary at cap 6,554, no rejection) and the reworked `compaction-summary-overflow` (declares 262,144, scripted endpoint serves 8,192; rejected caps 65,536 and 1,788, three folds at 894). Agent's plants: altering the recorded cap fails each scenario, restoring passes. Chair re-ran `pnpm run test:snapshot -t compaction`: 6 passed; parsed both JSONLs (caps `[6554]`; `[894, 894, 894]` with 2 failed brackets); scanned for leaked paths or keys (none).
+- 2026-10-19, iteration B implemented in `llm-pi-ai` (uncommitted at the time of this entry): `src/served-context.ts` (probe, Ollama name matching, learned windows, shared in-flight probes), `src/endpoint.ts` (root, headers, bounded reads shared with discovery), adapter reports `min(configured, learned)`, gives pi-ai that window (clamp and usage overflow), and refuses a request whose pi-ai estimate exceeds the learned window with `CONTEXT_WINDOW_EXCEEDED` before network I/O; config `servedContextProbe` (`auto`/`off`) and `servedContextProbeTimeoutMs` (5,000).
+  - Evidence: `served-context.spec.ts` 45 tests; Loader composition test (blank capacity fields learn 32,768 and clamp to 28,672) and proxy egress test both fail with the tracker unwired; mutations caught: tracker unwired, pi-ai given the configured descriptor, pre-send check removed. pi-ai suite 435 passed; `llm-pi-ai/src` 100% statements/branches/functions/lines; oxlint clean (a planted `no-unsafe-assignment` was reported first); `jscpd` 0 clones; `verify-export-jsdoc` passes; README en/zh pairing and config catalog regenerated; Agent Note `implemented/architecture/2026-10-19-ollama-served-context-window` (303 notes conform).
+  - Not done: preloading an unloaded model (first request after a restart can still be truncated); probing LM Studio, llama.cpp, or vLLM windows; a user-visible notice beyond the log warning and the context meter.
+
+## Decisions waiting on Andrew (third round)
+
+- Push: the pre-push hook (`pnpm run typecheck`) still fails only on `exceljs`/`xlsx`, because `cdn.sheetjs.com` is still blocked (proxy 403). The earlier hook skip covered one push. Either agree to skip it again, or add `cdn.sheetjs.com` under Allowed domains in the environment's Network access settings.
+- 8K: the shipped web profile's fixed prompt is about 7.8k tokens, so `OLLAMA_CONTEXT_LENGTH=8192` cannot run this harness; 32K works but compacts every 7-13k tokens. Larger `num_ctx` trades VRAM (finding 103) for fewer summary hops.
+- Probe default: `auto` probes every declared route once per configuration change (Ollama routes on every model-info lookup); `off` per route restores the old behavior.
 
 ## Process
 
@@ -110,7 +136,7 @@ Reproduction: `packages/compaction/compaction-basic/tests/provider-window-overfl
   - Pending: `doc-sync`, keyless snapshot scenario, push (pre-push typecheck hook fails only on the environmental errors; bypass needs Andrew's agreement per `dsh-pre-push-checks`).
 - 2026-10-19, iteration 2 evidence started: end-to-end run of the real `llm-pi-ai` adapter against a local window-enforcing OpenAI-compatible server.
 - 2026-10-19, `doc-sync`: 41 passed, 2 failed — `doc-typecheck` (its `build:lib:host` prerequisite hits the `exceljs`/`xlsx` errors; its own step `doc-typecheck:contracts-ready` passes: 81 blocks compiled) and `Cordis inspect catalog` (fails identically on the original tree at `ui-sidebar-documentpreview/src/client/document/contract.ts:45:27`). Both are the uninstallable documentpreview package.
-- 2026-10-19, commits: `ba8452c77` fix(compaction) iteration 1; `9ed029085` fix(llm) iteration 4 — vLLM 0.32 engine, llama.cpp "Context size has been exceeded." / "context shift is disabled", TGI, LiteLLM class name; 6 positives fail on the original classifier, an overflow-worded HTTP 500 now maps to `CONTEXT_WINDOW_EXCEEDED` instead of `SERVER` on the pi-ai route. LM Studio's newer wording was left out: only recalled from memory, not grounded in a source.
+- 2026-10-19, commits: `fix(compaction): fold summaries a provider rejects as too large` (iteration 1); `fix(llm): classify self-hosted servers' context-overflow wordings` (iteration 4) — vLLM 0.32 engine, llama.cpp "Context size has been exceeded." / "context shift is disabled", TGI, LiteLLM class name; 6 positives fail on the original classifier, an overflow-worded HTTP 500 now maps to `CONTEXT_WINDOW_EXCEEDED` instead of `SERVER` on the pi-ai route. LM Studio's newer wording was left out: only recalled from memory, not grounded in a source.
 
 ## Decisions waiting on Andrew
 

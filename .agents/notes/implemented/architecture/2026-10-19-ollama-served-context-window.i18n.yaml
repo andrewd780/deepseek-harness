@@ -1,0 +1,22 @@
+# Bilingual-pair consistency record for 2026-10-19-ollama-served-context-window.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-10-19-ollama-served-context-window.md
+/agent-note-pi-ai-learns-the-context-window-an-ollama-endpoint-serves:
+  en: 68378c60ee67f59e
+  zh: 66f796287ac939dd
+/agent-note-pi-ai-learns-the-context-window-an-ollama-endpoint-serves/problem:
+  en: 96f20ee87870d9c4
+  zh: 337942db9afe462b
+/agent-note-pi-ai-learns-the-context-window-an-ollama-endpoint-serves/decision:
+  en: 8207eb48a7661329
+  zh: 99cf820068241106
+/agent-note-pi-ai-learns-the-context-window-an-ollama-endpoint-serves/alternatives-considered:
+  en: fab08b9fac820f66
+  zh: 424bc2b12ec967e3
+/agent-note-pi-ai-learns-the-context-window-an-ollama-endpoint-serves/consequences:
+  en: 0ad2d3f81d5126e4
+  zh: ee690f21904453ec
+/agent-note-pi-ai-learns-the-context-window-an-ollama-endpoint-serves/testing:
+  en: 4b86c54c26f75bda
+  zh: 67afabba6f9eca9a

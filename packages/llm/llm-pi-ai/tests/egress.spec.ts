@@ -66,3 +66,29 @@ describe('pi-ai provider stream egress', () => {
     expect(observed.join('|')).toContain('pi-stream-probe.invalid')
   })
 })
+
+describe('pi-ai served-context probe egress', () => {
+  it('sends the process-listing probe through the proxy', async () => {
+    const observed = await observe(async () => {
+      vi.stubEnv('PI_TEST_KEY', 'probe-key')
+      try {
+        const ctx = new Context()
+        await ctx.plugin(LlmRuntime)
+        await ctx.plugin(LlmPiAi, {
+          providers: {
+            ollama: {
+              apiKeyEnv: 'PI_TEST_KEY',
+              api: 'openai-completions',
+              baseURL: 'http://pi-ps-probe.invalid/v1',
+              models: [{ id: 'qwen3' }],
+            },
+          },
+        })
+        await ctx.llm.resolveModelInfo('ollama', 'qwen3')
+      } finally {
+        vi.unstubAllEnvs()
+      }
+    })
+    expect(observed.join('|')).toContain('pi-ps-probe.invalid/api/ps')
+  })
+})

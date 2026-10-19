@@ -1749,7 +1749,7 @@ export interface Config extends ProtocolConfig {
 
 - `inject`: `llm`
 - `refs`: `Api` (`@earendil-works/pi-ai`) · `CacheRetention` (`@earendil-works/pi-ai`) · `Model` (`@earendil-works/pi-ai`) · `ModelThinkingLevel` (`@earendil-works/pi-ai`) · `OpenAICompletionsCompat` (`@earendil-works/pi-ai`) · [`RetryPolicyConfig`](../packages/llm/llm/src/index.ts) · `ThinkingBudgets` (`@earendil-works/pi-ai`) · `Transport` (`@earendil-works/pi-ai`) · `Volatile` (`@deepseek-ai/cordis`)
-- `source`: [`packages/llm/llm-pi-ai/src/config.ts:222`](../packages/llm/llm-pi-ai/src/config.ts)
+- `source`: [`packages/llm/llm-pi-ai/src/config.ts:247`](../packages/llm/llm-pi-ai/src/config.ts)
 
 ```ts config-catalog
 /** Plugin configuration: the provider routes this instance owns. */
@@ -1838,6 +1838,17 @@ export interface PiAiProviderProfile {
   websocketConnectTimeoutMs?: number
   /** Maximum provider idle time while one stream read is outstanding. */
   streamIdleTimeoutMs?: number
+  /**
+   * Whether a declared route — one the installed catalog does not ship — with
+   * a `baseURL` and an OpenAI or Anthropic protocol learns the context window
+   * an Ollama server serves from its process listing, `GET {root}/api/ps`
+   * (default `auto`). A learned window below the configured one replaces it,
+   * and a request too large for it fails as `CONTEXT_WINDOW_EXCEEDED` instead
+   * of being truncated by the server. `off` sends no probe.
+   */
+  servedContextProbe?: 'auto' | 'off'
+  /** Bound on one served-context probe in milliseconds (default 5,000). */
+  servedContextProbeTimeoutMs?: number
   /**
    * Maximum base64-encoded image payload per request. When a request's
    * accumulated images exceed it, the oldest images are replaced by text

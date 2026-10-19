@@ -72,6 +72,7 @@ import type { ResolvedPiAiProviderProfile } from './config.ts'
 import { discoverModels } from './discovery.ts'
 import type { StoredModelDiscoveryProfile } from './discovery.ts'
 import { registerPiAiFlows } from './login.ts'
+import { ServedContextTracker } from './served-context.ts'
 
 export { PiAiAdapter } from './adapter.ts'
 export type { PiAiAdapterOptions } from './adapter.ts'
@@ -209,6 +210,8 @@ export function apply(ctx: Context, config: Config): void {
   // through `ctx` per call, so they stay correct across the collection rebuilds
   // a configuration change causes, and a sign-in survives one.
   const auth = { credentials: credentialStoreFrom(ctx), authContext: authContextFrom(ctx) }
+  const servedContext = new ServedContextTracker({ resolveApiKey })
+  ctx.effect(() => () => { servedContext.dispose() })
   const adapter = new PiAiAdapter({
     profiles,
     resolveApiKey,
@@ -223,6 +226,13 @@ export function apply(ctx: Context, config: Config): void {
       ctx.logger.warn(
         `llm-pi-ai: unusable replay state on assistant history for route "${provider}/${model}";`
         + ` sending that message as provider-neutral content (${reason})`,
+      )
+    },
+    servedContext,
+    onServedContextNarrowed: ({ provider, model, configured, served }) => {
+      ctx.logger.warn(
+        `llm-pi-ai: the endpoint of route "${provider}" serves model "${model}" with a ${served}-token context`
+        + ` window, smaller than the configured ${configured}; using ${served}`,
       )
     },
   })

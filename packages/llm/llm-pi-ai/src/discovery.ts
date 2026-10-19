@@ -24,38 +24,11 @@
 
 import { INVALID_CREDENTIAL_CODE, LlmError, normalizeApiKey } from '@deepseek-ai/dsh-llm'
 import type { LlmDiscoveredModel, LlmModelDiscoveryOperation } from '@deepseek-ai/dsh-llm'
-import { attributionHeaders } from '@deepseek-ai/dsh-llm'
 import { catalogModels } from './catalog.ts'
-
-/**
- * Protocols whose model listing this module can read. OpenAI protocols use
- * bearer auth at `GET {baseURL}/models`; Anthropic Messages uses `x-api-key`
- * and `anthropic-version` at its native `GET /v1/models`. Azure is absent
- * despite its OpenAI lineage — it authenticates with an `api-key` header and
- * requires an `api-version` query — and Codex authenticates through OAuth;
- * guessing at either would report an authentication failure as a provider
- * with no models. pi-ai's remaining protocols are absent for the same reason.
- */
-const LISTABLE_PROTOCOLS: ReadonlySet<string> = new Set([
-  'anthropic-messages',
-  'openai-completions',
-  'openai-responses',
-])
-
-/** Stable API version required by Anthropic's model-listing endpoint. */
-const ANTHROPIC_VERSION = '2023-06-01'
+import { endpointHeaders, endpointRoot, LISTABLE_PROTOCOLS, readBounded } from './endpoint.ts'
 
 /** Largest model-list page accepted by Anthropic's public endpoint; discovery reads one page and does not follow `has_more`. */
 const ANTHROPIC_MODEL_LIMIT = 1000
-
-/**
- * Endpoint replies larger than this are refused. The endpoint is whatever URL
- * the user typed, so the ceiling holds on the bytes actually read rather than
- * on the length the server claims — the same two-stage shape `dsh-web-fetch`
- * uses for its own caller-supplied URLs, except that a truncated model listing
- * is not parseable, so overflow rejects instead of truncating.
- */
-const MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
 /** Capacity fields nested by enriched model-directory replies. */
 interface ListingLimit {
@@ -109,59 +82,12 @@ function label(...candidates: readonly unknown[]): string | undefined {
  * path such as `https://gateway.example/openai/v1` keeps its segments instead
  * of losing them to `URL` resolution. OpenAI protocols list at
  * `{baseURL}/models`. Anthropic lists at `{root}/v1/models`, where the root is
- * the base without trailing slashes and without one trailing `/v1` segment:
- * gateway documentation publishes both spellings of the same root. Only this
- * listing URL normalizes that segment; model requests receive the configured
- * `baseURL` unchanged.
+ * {@link endpointRoot}. Model requests receive the configured `baseURL`
+ * unchanged.
  */
 function listingUrl(baseURL: string, api: string): string {
-  const base = baseURL.replace(/\/+$/, '')
-  if (api !== 'anthropic-messages') return `${base}/models`
-  const root = base.endsWith('/v1') ? base.slice(0, -3) : base
-  return `${root}/v1/models?limit=${String(ANTHROPIC_MODEL_LIMIT)}`
-}
-
-/**
- * Read a reply body, refusing one that outgrows the ceiling. A declared length
- * is checked first so an honest server is turned away without transferring
- * anything; the accumulated total is what actually enforces the bound, because
- * a server that under-declares (or streams) tells us nothing up front.
- */
-async function readBounded(response: Response, url: string): Promise<string> {
-  const oversized = (): LlmError =>
-    new LlmError(`${url} answered with more than ${MAX_RESPONSE_BYTES} bytes`, 'DISCOVERY_FAILED')
-  const declared = Number(response.headers.get('content-length') ?? Number.NaN)
-  if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
-    await response.body?.cancel()
-    throw oversized()
-  }
-  /* v8 ignore next -- fetch always exposes a body stream on a 2xx Response; the null guard is defensive. */
-  if (response.body === null) return ''
-  const reader = response.body.getReader()
-  const chunks: Uint8Array[] = []
-  let total = 0
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      total += value.byteLength
-      if (total > MAX_RESPONSE_BYTES) throw oversized()
-      chunks.push(value)
-    }
-  } finally {
-    /* v8 ignore next 4 -- cancel() after a completed or abandoned read settles without rejecting; unobserved best-effort cleanup. */
-    await reader.cancel().catch(() => {
-      // Cancel after a drained read, or after this function walked away from
-      // an oversized one, is cleanup; the reply is already decided either way.
-    })
-  }
-  const body = new Uint8Array(total)
-  let offset = 0
-  for (const chunk of chunks) {
-    body.set(chunk, offset)
-    offset += chunk.byteLength
-  }
-  return new TextDecoder().decode(body)
+  if (api !== 'anthropic-messages') return `${baseURL.replace(/\/+$/, '')}/models`
+  return `${endpointRoot(baseURL)}/v1/models?limit=${String(ANTHROPIC_MODEL_LIMIT)}`
 }
 
 /**
@@ -315,15 +241,7 @@ export async function discoverModels(
   const apiKey = supplied === undefined ? undefined : usableProbeKey(supplied)
   let response: Response
   try {
-    const headers = new Headers(stored?.headers === undefined ? undefined : Object.entries(stored.headers))
-    headers.set('accept', 'application/json')
-    if (api === 'anthropic-messages') {
-      headers.set('anthropic-version', ANTHROPIC_VERSION)
-      if (apiKey !== undefined) headers.set('x-api-key', apiKey)
-    } else if (apiKey !== undefined) {
-      headers.set('authorization', `Bearer ${apiKey}`)
-    }
-    for (const [name, value] of Object.entries(attributionHeaders())) headers.set(name, value)
+    const headers = endpointHeaders(api, apiKey, stored?.headers)
     response = await fetch(url, {
       method: 'GET',
       headers,
@@ -343,7 +261,7 @@ export async function discoverModels(
   }
   let text: string
   try {
-    text = await readBounded(response, url)
+    text = await readBounded(response, url, 'DISCOVERY_FAILED')
   } catch (error: unknown) {
     // Cancellation during the body read rejects with the abort reason, which
     // may be any value; the caller gets the same coded failure it would have

@@ -125,11 +125,25 @@ describe('LlmRuntime', () => {
     expect(isContextWindowExceededError('input exceeds the model context window limit')).toBe(true)
   })
 
+  it.each([
+    ['vLLM engine prompt check', 'The decoder prompt (length 33000) is longer than the maximum model length of 32768. Make sure that `max_model_len` is no smaller than the number of text tokens.'],
+    ['llama.cpp full context during decode', '500 {"error":{"code":500,"message":"Context size has been exceeded.","type":"server_error"}}'],
+    ['llama.cpp full context during generation', 'context shift is disabled'],
+    ['Text Generation Inference total-token check', 'Input validation error: `inputs` tokens + `max_new_tokens` must be <= 4096. Given: 4000 `inputs` tokens and 512 `max_new_tokens`'],
+    ['Text Generation Inference input-token check', 'Input validation error: `inputs` must have less than 4095 tokens. Given: 5000'],
+    ['LiteLLM exception class', 'litellm.ContextWindowExceededError: litellm.BadRequestError: Current length is 40000 while limit is 32768'],
+  ])('recognizes the %s wording as context-window overflow', (_server, detail) => {
+    expect(isContextWindowExceededError(detail)).toBe(true)
+  })
+
   it('does not mistake unrelated input validation for context-window overflow', () => {
     expect(isContextWindowExceededError('invalid request: malformed tool arguments')).toBe(false)
     expect(isContextWindowExceededError('invalid input: temperature exceeds maximum allowed value')).toBe(false)
     expect(isContextWindowExceededError('input exceeds maximum allowed value')).toBe(false)
     expect(isContextWindowExceededError('context window size must be positive')).toBe(false)
+    expect(isContextWindowExceededError('Input validation error: `max_new_tokens` must be <= 512. Given: 1024')).toBe(false)
+    expect(isContextWindowExceededError('context shift enabled for slot 0')).toBe(false)
+    expect(isContextWindowExceededError('maximum model length must be a positive integer')).toBe(false)
   })
 
   it('distinguishes exhausted account quota from transient rate limiting', () => {

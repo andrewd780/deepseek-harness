@@ -1,0 +1,12 @@
+version: 1
+scenario: compaction-small-window-defaults
+profile: headless
+composition: compaction-small-window-defaults
+recording: authored
+platform: posix
+header:
+  class: compaction-small-window-defaults
+  pin: true
+  systemPromptSource: compaction-recovery
+  toolSchemasSource: compaction-recovery
+  changes: 1

@@ -1,0 +1,14 @@
+version: 1
+scenario: compaction-summary-overflow
+profile: headless
+composition: compaction-summary-overflow
+recording: authored
+platform: posix
+header:
+  class: compaction-summary-overflow
+  pin: true
+  systemPromptSource: compaction-recovery
+  toolSchemasSource: compaction-recovery
+  changes: 1
+replay:
+  override: true

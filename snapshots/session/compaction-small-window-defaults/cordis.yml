@@ -1,0 +1,14 @@
+# Proactive compaction under shipped defaults on a declared 32,768-token window.
+
+- id: agent-instructions
+  disabled: true
+
+- id: llm-deepseek
+  config:
+    models:
+      - id: deepseek-v4-flash
+        contextWindow: 32768
+
+- insert:
+    - id: compaction-working-directory
+      name: '../../../packages/test-support/session-snapshot/tests/fixtures/compaction-working-directory.ts'

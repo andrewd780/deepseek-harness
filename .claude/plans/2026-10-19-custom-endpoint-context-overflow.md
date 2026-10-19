@@ -111,7 +111,7 @@ Reproduction: `packages/compaction/compaction-basic/tests/provider-window-overfl
   - Evidence: `served-context.spec.ts` 45 tests; Loader composition test (blank capacity fields learn 32,768 and clamp to 28,672) and proxy egress test both fail with the tracker unwired; mutations caught: tracker unwired, pi-ai given the configured descriptor, pre-send check removed. pi-ai suite 435 passed; `llm-pi-ai/src` 100% statements/branches/functions/lines; oxlint clean (a planted `no-unsafe-assignment` was reported first); `jscpd` 0 clones; `verify-export-jsdoc` passes; README en/zh pairing and config catalog regenerated; Agent Note `implemented/architecture/2026-10-19-ollama-served-context-window` (303 notes conform).
   - Not done: preloading an unloaded model (first request after a restart can still be truncated); probing LM Studio, llama.cpp, or vLLM windows; a user-visible notice beyond the log warning and the context meter.
 
-## Decisions waiting on Andrew (third round)
+## Decisions waiting on Andrew (third round, carried into the pause block)
 
 - Push: the pre-push hook (`pnpm run typecheck`) still fails only on `exceljs`/`xlsx`, because `cdn.sheetjs.com` is still blocked (proxy 403). The earlier hook skip covered one push. Either agree to skip it again, or add `cdn.sheetjs.com` under Allowed domains in the environment's Network access settings.
 - 8K: the shipped web profile's fixed prompt is about 7.8k tokens, so `OLLAMA_CONTEXT_LENGTH=8192` cannot run this harness; 32K works but compacts every 7-13k tokens. Larger `num_ctx` trades VRAM (finding 103) for fewer summary hops.
@@ -138,9 +138,22 @@ Reproduction: `packages/compaction/compaction-basic/tests/provider-window-overfl
 - 2026-10-19, `doc-sync`: 41 passed, 2 failed — `doc-typecheck` (its `build:lib:host` prerequisite hits the `exceljs`/`xlsx` errors; its own step `doc-typecheck:contracts-ready` passes: 81 blocks compiled) and `Cordis inspect catalog` (fails identically on the original tree at `ui-sidebar-documentpreview/src/client/document/contract.ts:45:27`). Both are the uninstallable documentpreview package.
 - 2026-10-19, commits: `fix(compaction): fold summaries a provider rejects as too large` (iteration 1); `fix(llm): classify self-hosted servers' context-overflow wordings` (iteration 4) — vLLM 0.32 engine, llama.cpp "Context size has been exceeded." / "context shift is disabled", TGI, LiteLLM class name; 6 positives fail on the original classifier, an overflow-worded HTTP 500 now maps to `CONTEXT_WINDOW_EXCEEDED` instead of `SERVER` on the pi-ai route. LM Studio's newer wording was left out: only recalled from memory, not grounded in a source.
 
-## Decisions waiting on Andrew
+## Decisions waiting on Andrew (first round, answered)
 
-- Exact error text, server type (vLLM / OpenRouter / LM Studio / llama.cpp / Ollama / hosted), and whether it hit on the first message or after a long conversation — decides whether the history fold (iteration 1) or the output reservation (iteration 2) is the fix that matters for him.
-- Whether the Context window and Max output fields were filled for that model.
-- Agreement to push past the pre-push typecheck hook, which fails only on `xlsx`/`exceljs` missing from this environment (or allow `cdn.sheetjs.com` in the environment's network settings so the hook can pass).
-- Workaround available today: set the model's Context window and Max output on the Models page to what the endpoint enforces, and in `cordis.patch.yml` set `@deepseek-ai/dsh-compaction-basic` `headroomTokens` small enough that `window − maxOutput − headroom > 0` (a 32,768 window with 4,096 output and 4,096 headroom compacted proactively in the recovery investigator's control run).
+- Answered 2026-10-19: Ollama, 32k, fields blank, long `/goal` chat; one hook skip for the first push. The exact error text was never captured. Open decisions now live in the pause block below.
+
+## Pause block (2026-10-19, Andrew: "record plan and stop and standby")
+
+- Stopped: no agents running (`ListAgents`: none); no build or test processes (only an unrelated plugin MCP server); the one-shot PR #1 check-in already fired and is disabled, not re-armed; the PR #1 activity subscription stays on, so a PR event can still wake the session.
+- Branch `claude/deepskee-context-limit-a7gjrz`: 6 commits ahead of `origin` once this block is committed (plan round 2, iteration A, snapshots, iteration B, plan round 3, this block). Pushed and in draft PR andrewd780/deepseek-harness#1: iteration 1 (fold), iteration 4 (classifier), and the first plan commit.
+- At risk: the 6 local commits exist only in this container. Push is blocked by the pre-push hook (`pnpm run typecheck`), which fails only on `exceljs`/`xlsx` because the proxy refuses `cdn.sheetjs.com` (403). Unblock with Andrew's "push" (skip the hook once more) or by allowing `cdn.sheetjs.com` under the environment's Network access settings.
+- Wake-up: Andrew's next message. Nothing is scheduled.
+- Resume steps, in order:
+  1. Push the branch (hook skip on Andrew's word, or normally once the host is allowed).
+  2. Update PR #1's description for iterations A and B: scope, `servedContextProbe` setting, tests and plants, the snapshot pair, and the 8K limit.
+  3. Re-arm the PR safety-net check-in per the check-in rules.
+  4. Next iteration, Andrew to choose: (a) load an unloaded Ollama model in the send path so the first request after a restart is checked; (b) iteration 2, pi-ai's 32,768-token output reservation on servers that count requested output (vLLM, gateways); (c) a user-visible notice when a served window narrows the configured one (Web UI, locale dictionaries); (d) served windows for LM Studio, llama.cpp, and vLLM.
+- Open decisions for Andrew:
+  - Push route: hook skip or allow `cdn.sheetjs.com`.
+  - Ollama context size: 8K cannot run the shipped web profile (fixed prompt about 7.8k tokens); 32K compacts every 7-13k tokens; a larger `num_ctx` costs VRAM (j-research finding 103) but means fewer summary hops.
+  - Probe default: keep `auto` (one GET per configuration change on every declared route, one per lookup on Ollama routes) or make it opt-in.

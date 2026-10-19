@@ -52,7 +52,8 @@ type SummarizedCompaction = PreparedCompaction & SummaryResult & {
   readonly checkpointMessage: UserMessage
 }
 
-interface CompactionTransactionOptions {
+/** Ownership, stability, durability, and summary sizing for one compaction transaction. */
+export interface CompactionTransactionOptions {
   /** `current-turn` derives a numbered owner; `null` writes a standalone bracket. */
   readonly owner: 'current-turn' | null
   /** Surface relationship that must survive asynchronous summarization. */
@@ -61,6 +62,18 @@ interface CompactionTransactionOptions {
   readonly flush?: () => Promise<void>
   /** Manual command that initiated this transaction, when present. */
   readonly sourceCommandId?: CommandId
+  /** Positive generation cap for the transaction's summary request. */
+  readonly maxTokens: number
+}
+
+/** A balanced oldest-first span of a compactable range and its route-priced size. */
+export interface BoundedSpan {
+  readonly start: SessionSeq
+  readonly end: SessionSeq
+  /** Surface position of `start`, where the replacement checkpoint lands. */
+  readonly position: number
+  /** Route-priced tokens of the span's nodes. */
+  readonly tokens: number
 }
 
 interface CompactionEntryState {
@@ -155,6 +168,44 @@ export function selectCompactableRange(
 }
 
 /**
+ * Choose the longest prefix of a compactable range whose route-priced nodes fit
+ * a token budget and whose end does not split an assistant tool-call/result
+ * pair. A prefix consisting only of `foldCheckpoint` is not admissible, because
+ * re-summarizing a checkpoint alone removes no history.
+ * @param session - session supplying authoritative current surface positions.
+ * @param measurement - measurement whose nodes align with the current surface.
+ * @param range - balanced compactable range from {@link selectCompactableRange}.
+ * @param budgetTokens - maximum route-priced tokens of the chosen span.
+ * @param foldCheckpoint - checkpoint the caller's previous transaction placed at the range start.
+ * @returns the bounded span, or `null` when no admissible prefix fits.
+ */
+export function selectBoundedPrefix(
+  session: Session,
+  measurement: TokenMeasurement,
+  range: { readonly start: SessionSeq; readonly end: SessionSeq },
+  budgetTokens: number,
+  foldCheckpoint: SessionSeq | undefined,
+): BoundedSpan | null {
+  const nodes = session.surface.nodes
+  const startIdx = nodes.indexOf(range.start)
+  const endIdx = nodes.indexOf(range.end)
+  let tokens = 0
+  let span: BoundedSpan | null = null
+  for (let index = startIdx; index <= endIdx; index += 1) {
+    // oxlint-disable-next-line typescript/no-non-null-assertion -- measurement nodes align with the surface.
+    tokens += measurement.nodes[index]!.tokens
+    if (tokens > budgetTokens) break
+    // oxlint-disable-next-line typescript/no-non-null-assertion -- index lies inside the surface.
+    const seq = nodes[index]!
+    if (index === startIdx && seq === foldCheckpoint) continue
+    if (toolPairingBalancedAfter(session, seq)) {
+      span = { start: range.start, end: seq, position: startIdx, tokens }
+    }
+  }
+  return span
+}
+
+/**
  * Run the single compaction transaction over one selected positional span.
  * Selection and validation are read-only. Idle/log validation and
  * `compaction/start` are synchronously adjacent, so the durable opening marker is
@@ -219,7 +270,7 @@ export async function compactSurfaceRegion(
   let stage: TransactionFailure['stage'] = 'summary'
 
   try {
-    const prepared = prepareCompaction(dependencies, session, selection)
+    const prepared = prepareCompaction(dependencies, session, selection, options.maxTokens)
     const summarized = await summarizeCompaction(
       dependencies,
       prepared,
@@ -362,6 +413,7 @@ function prepareCompaction(
   dependencies: RegionDependencies,
   session: Session,
   selection: SurfaceSelection,
+  maxTokens: number,
 ): PreparedCompaction {
   const measurement = dependencies.meter.measure(session)
   const selectedNodes = measurement.nodes.slice(selection.startIdx, selection.endIdx + 1)
@@ -379,7 +431,7 @@ function prepareCompaction(
     // route-priced `tokens` instead.
     shadowedTokenCount: selectedNodes.reduce((total, node) => total + node.heuristicTokens, 0),
     shadowedRouteTokenCount: selectedNodes.reduce((total, node) => total + node.tokens, 0),
-    input: buildSummarizationInput(session, selection.shadowedSeqs),
+    input: buildSummarizationInput(session, selection.shadowedSeqs, maxTokens),
   }
 }
 
@@ -404,7 +456,7 @@ async function summarizeCompaction(
       assertStable(dependencies, agent.session, prepared)
       if (!dependencies.recover(error, agent, prepared.shadowedSeqs, signal)) throw error
       prepared = prepareCompaction(dependencies, agent.session,
-        validateSurfaceRegion(agent.session, prepared.start, prepared.end))
+        validateSurfaceRegion(agent.session, prepared.start, prepared.end), prepared.input.maxTokens)
     }
   }
   const checkpointMessage = createUserMessage({
@@ -539,11 +591,13 @@ function completeCompaction(
  * message, contributes no leading system message.
  * @param session - session supplying the surface head, request header, and per-node projection.
  * @param shadowedSeqs - the surface-node seqs, in order, being compacted.
+ * @param maxTokens - generation cap for the summary request.
  * @returns the replayed conversation prefix to condense.
  */
 function buildSummarizationInput(
   session: Session,
   shadowedSeqs: readonly SessionSeq[],
+  maxTokens: number,
 ): SummarizationInput {
   const header = session.requestHeader()
   // shadowedSeqs are current surface seqs, so the surface has a node 0.
@@ -559,6 +613,7 @@ function buildSummarizationInput(
   return {
     ...header?.tools === undefined ? {} : { tools: header.tools },
     messages: system === null ? regionMessages : [system, ...regionMessages],
+    maxTokens,
   }
 }
 

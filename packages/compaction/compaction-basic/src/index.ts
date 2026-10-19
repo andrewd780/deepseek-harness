@@ -9,7 +9,7 @@ import z from '@deepseek-ai/schemastery'
 import { CompactionEngine, ManualCompactionError } from '@deepseek-ai/dsh-compaction'
 import type { CompactionResult, CompactionTrigger } from '@deepseek-ai/dsh-compaction'
 import type { Session, SessionSeq } from '@deepseek-ai/dsh-session'
-import { CONTEXT_WINDOW_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
+import { CONTEXT_WINDOW_EXCEEDED_CODE, isHarnessError } from '@deepseek-ai/dsh-llm'
 import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
 import { assertNever } from '@deepseek-ai/dsh-util-values'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
@@ -25,14 +25,17 @@ import {
 import {
   assertNoActiveCompaction,
   compactSurfaceRegion,
+  selectBoundedPrefix,
   selectCompactableRange,
 } from './region.ts'
-import { summarizeWithLlm } from './summarizer.ts'
+import type { CompactionTransactionOptions } from './region.ts'
+import { SUMMARY_TRUNCATED_CODE, summarizeWithLlm } from './summarizer.ts'
 import type { SummarizationInput, SummaryResult } from './summarizer.ts'
 import type {
   BasicCompactionConfig,
   ModelCompactPolicyConfig,
   ResolvedConfig,
+  ResolvedTargetPolicy,
 } from './types.ts'
 
 export type {
@@ -76,6 +79,72 @@ function conversationTarget(
   if (agent.options.provider === undefined || agent.options.provider.length === 0
     || agent.options.model === undefined || agent.options.model.length === 0) return undefined
   return { provider: agent.options.provider, model: agent.options.model }
+}
+
+/** Span budget and generation cap for the next summary request of a fold. */
+interface SummaryBound {
+  readonly spanTokens: number
+  readonly maxTokens: number
+}
+
+/**
+ * Why a summary request did not fit: the provider rejected it as exceeding the
+ * context window, or its output stopped at the generation cap or the end of the
+ * provider's window.
+ */
+type SummaryRejection = 'window' | 'truncated'
+
+/**
+ * Classify a failed compaction transaction whose summary did not fit.
+ * @param error - failure thrown by one compaction transaction.
+ * @returns the rejection kind, or `undefined` for every other failure.
+ */
+function summaryRejection(error: unknown): SummaryRejection | undefined {
+  const cause = error instanceof ManualCompactionError
+    ? error.code === 'summary' ? error.cause : undefined
+    : error
+  if (!isHarnessError(cause)) return undefined
+  switch (cause.code) {
+    case CONTEXT_WINDOW_EXCEEDED_CODE:
+      return 'window'
+    case SUMMARY_TRUNCATED_CODE:
+      return 'truncated'
+    // Every other code is a summary failure that a smaller request cannot repair.
+    default:
+      return undefined
+  }
+}
+
+/**
+ * Bound the next summary request after one over a span of `rejectedSpanTokens`
+ * did not fit. A window rejection whose cap exceeds the span's price lowers the
+ * cap to that price first, because a summary at least as large as its span is
+ * rejected anyway; every other rejection halves the span budget. A window
+ * rejection keeps the cap at or below the span budget, while a truncated
+ * summary keeps its cap so the smaller span has room to finish.
+ * @param bound - bound of the request that did not fit.
+ * @param rejection - why it did not fit.
+ * @param rejectedSpanTokens - route-priced tokens of its span.
+ * @returns the strictly smaller bound for the next request.
+ */
+function nextSummaryBound(
+  bound: SummaryBound,
+  rejection: SummaryRejection,
+  rejectedSpanTokens: number,
+): SummaryBound {
+  if (rejection === 'window' && bound.maxTokens > rejectedSpanTokens) {
+    return { spanTokens: rejectedSpanTokens, maxTokens: Math.max(1, rejectedSpanTokens) }
+  }
+  const spanTokens = Math.floor(rejectedSpanTokens / 2)
+  return {
+    spanTokens,
+    maxTokens: rejection === 'window' ? Math.max(1, Math.min(bound.maxTokens, spanTokens)) : bound.maxTokens,
+  }
+}
+
+/** Whether a manual transaction closed at the summary stage without a replacement. */
+function isManualSummaryStageFailure(error: unknown): boolean {
+  return error instanceof ManualCompactionError && (error.code === 'summary' || error.code === 'changed')
 }
 
 const thresholdRatioSchema = z.number()
@@ -249,11 +318,7 @@ export class BasicCompactionEngine extends CompactionEngine {
     agent: Agent,
     signal?: AbortSignal,
   ): Promise<SummaryResult> {
-    const target = conversationTarget(agent)
-    const config = target === undefined
-      ? this.config
-      : resolveTargetPolicy(this.config, target)
-    return summarizeWithLlm(this.ctx, config, input, agent, signal)
+    return summarizeWithLlm(this.ctx, this.summaryPolicy(agent), input, agent, signal)
   }
 
   /**
@@ -292,13 +357,12 @@ export class BasicCompactionEngine extends CompactionEngine {
     const prune = this.ctx.get('toolResultPruner')
 
     if (trigger === 'context-overflow') {
-      if (prune !== undefined) {
-        prune.pruneSession(agent.session)
-        measurement = meter.measure(agent.session)
-      }
-      const range = selectCompactableRange(agent.session, measurement, 0)
-      if (range === null) return null
-      return this.compactRegion(range.start, range.end, agent, signal)
+      prune?.pruneSession(agent.session)
+      return this.compactWithinProviderWindow(
+        agent,
+        { owner: 'current-turn', stability: 'whole-surface' },
+        signal,
+      )
     }
 
     const info = await this.ctx.llm.resolveModelInfo(target.provider, target.model, signal)
@@ -367,7 +431,7 @@ export class BasicCompactionEngine extends CompactionEngine {
       start,
       end,
       agent,
-      { owner: 'current-turn', stability: 'whole-surface' },
+      { owner: 'current-turn', stability: 'whole-surface', maxTokens: this.summaryPolicy(agent).maxTokens },
       signal,
     )
   }
@@ -391,17 +455,7 @@ export class BasicCompactionEngine extends CompactionEngine {
         const operationSignal = AbortSignal.any([agentSignal, signal])
         try {
           operationSignal.throwIfAborted()
-          const range = selectCompactableRange(
-            agent.session,
-            this.ctx.tokenMeter.measure(agent.session),
-            0,
-          )
-          if (range === null) return null
-          return await compactSurfaceRegion(
-            this.regionDependencies(),
-            agent.session,
-            range.start,
-            range.end,
+          return await this.compactWithinProviderWindow(
             agent,
             {
               owner: null,
@@ -432,6 +486,78 @@ export class BasicCompactionEngine extends CompactionEngine {
         { cause: error },
       )
     }
+  }
+
+  /**
+   * Compact the whole compactable range for overflow recovery or a manual
+   * request. The first transaction summarizes the range in one request under
+   * the policy's generation cap. When a summary does not fit the provider's
+   * window, the bound for the next request shrinks, and later transactions
+   * fold oldest-first balanced prefixes within that bound into the running
+   * checkpoint until the range is consumed. Every request is smaller than the
+   * one that did not fit, so the fold ends once no admissible prefix fits.
+   * @param agent - agent whose session surface is compacted.
+   * @param options - transaction ownership, stability, and durability; the fold chooses each cap.
+   * @param signal - cancellation forwarded to every transaction.
+   * @returns the last committed result, or `null` when no compactable range exists.
+   * After a committed fold, a later manual summary-stage failure or a bound that
+   * admits no prefix returns the committed progress instead of throwing.
+   * @throws the latest summary rejection when no admissible prefix fits before
+   * any transaction commits, or any other transaction failure.
+   */
+  private async compactWithinProviderWindow(
+    agent: Agent,
+    options: Omit<CompactionTransactionOptions, 'maxTokens'>,
+    signal: AbortSignal,
+  ): Promise<CompactionResult | null> {
+    const dependencies = this.regionDependencies()
+    let bound: SummaryBound = {
+      spanTokens: Number.POSITIVE_INFINITY,
+      maxTokens: this.summaryPolicy(agent).maxTokens,
+    }
+    let foldCheckpoint: SessionSeq | undefined
+    let result: CompactionResult | null = null
+    let rejection: unknown
+    for (;;) {
+      signal.throwIfAborted()
+      const measurement = this.ctx.tokenMeter.measure(agent.session)
+      const range = selectCompactableRange(agent.session, measurement, 0)
+      if (range === null) return result
+      const span = selectBoundedPrefix(agent.session, measurement, range, bound.spanTokens, foldCheckpoint)
+      if (span === null) {
+        if (result !== null) return result
+        throw rejection
+      }
+      try {
+        result = await compactSurfaceRegion(
+          dependencies,
+          agent.session,
+          span.start,
+          span.end,
+          agent,
+          { ...options, maxTokens: bound.maxTokens },
+          signal,
+        )
+      } catch (error: unknown) {
+        if (signal.aborted) throw error
+        const kind = summaryRejection(error)
+        if (kind === undefined) {
+          if (result !== null && isManualSummaryStageFailure(error)) return result
+          throw error
+        }
+        rejection = error
+        bound = nextSummaryBound(bound, kind, span.tokens)
+        continue
+      }
+      if (span.end === range.end) return result
+      foldCheckpoint = agent.session.surface.nodes[span.position]
+    }
+  }
+
+  /** Resolve the exact-target policy for the agent's conversation, or the defaults without one. */
+  private summaryPolicy(agent: Agent): ResolvedConfig | ResolvedTargetPolicy {
+    const target = conversationTarget(agent)
+    return target === undefined ? this.config : resolveTargetPolicy(this.config, target)
   }
 
   /** Bind the effective token meter and dynamically dispatched summarizer hook. */

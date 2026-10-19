@@ -32,7 +32,7 @@ The same exact-target override can select summarization provider/model, summariz
 
 ### Target-specific pressure failures preserve optional composition
 
-An adapter that lacks capacity metadata remains a valid LLM route. Manual proactive pressure fails with a target-specific configuration error; the automatic listener warns once per exact route and continues with full history. The same suppression applies when output plus headroom exhausts capacity or retention reaches the trigger, while unrelated operational failures remain independently visible. Canonical provider-confirmed overflow does not need capacity metadata: it bypasses the proactive threshold and normal retention budget, attempts one maximal balanced reduction, and preserves the original provider error unless replacement proves progress.
+An adapter that lacks capacity metadata remains a valid LLM route. Manual proactive pressure fails with a target-specific configuration error; the automatic listener warns once per exact route and continues with full history. The same suppression applies when output plus headroom exhausts capacity or retention reaches the trigger, while unrelated operational failures remain independently visible. Canonical provider-confirmed overflow does not need capacity metadata: it bypasses the proactive threshold and normal retention budget, attempts one maximal balanced reduction, [folds smaller spans](../bug-fix/2026-10-19-overflow-summary-folding.md) when the provider rejects that summary request, and preserves the original provider error unless replacement proves progress.
 
 ## Testing
 

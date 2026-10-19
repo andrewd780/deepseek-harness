@@ -104,11 +104,14 @@ function summarizedText(input: SummarizationInput): string {
 }
 
 /** A minimal replayed prefix carrying one user message of the given text. */
-function promptInput(text: string): SummarizationInput {
-  return { messages: [createUserMessage({
-    content: [{ type: 'text', text }],
-    source: { kind: 'test' },
-  })] }
+function promptInput(text: string, maxTokens = 4096): SummarizationInput {
+  return {
+    messages: [createUserMessage({
+      content: [{ type: 'text', text }],
+      source: { kind: 'test' },
+    })],
+    maxTokens,
+  }
 }
 
 /**
@@ -1076,7 +1079,7 @@ describe('compaction region transaction', () => {
     await compact.compactRegion(nodes[1]!, nodes[2]!, agent(session, MODEL), SIGNAL)
 
     const { input } = compact.calls[0]!
-    expect(input).toEqual({ messages: prefix, tools })
+    expect(input).toEqual({ messages: prefix, tools, maxTokens: 8192 })
   })
 
   it('omits the summarizer system prompt for an empty system head or a system-less surface', async () => {
@@ -1419,7 +1422,7 @@ describe('default one-shot summarizer', () => {
     }>().not.toExtend<SummaryResult>()
   })
 
-  it('uses configured model/default cap, forwards cancellation, and keeps only safe text', async () => {
+  it('uses the configured model and the requested cap, forwards cancellation, and keeps only safe text', async () => {
     const { adapter, compact } = await summarizerHarness([
       { type: 'reasoning', text: 'private' },
       { type: 'text', text: 'public summary' },
@@ -1428,11 +1431,10 @@ describe('default one-shot summarizer', () => {
       auto: false,
       summarizationProvider: MODEL,
       summarizationModel: MODEL,
-      maxTokens: 321,
     })
     const session = conversation(1)
     adapter.usage = { inputTokens: 12, outputTokens: 3 }
-    const output = await compact.runSummarize(promptInput('transcript'), agent(session, 'fallback'), SIGNAL)
+    const output = await compact.runSummarize(promptInput('transcript', 321), agent(session, 'fallback'), SIGNAL)
 
     expect(output).toEqual({
       summary: [{ type: 'text', text: 'public summary' }],
@@ -1483,6 +1485,7 @@ describe('default one-shot summarizer', () => {
     await compact.runSummarize({
       tools,
       messages: [system, prefix],
+      maxTokens: 4096,
     }, agent(conversation(1), MODEL))
 
     expect(adapter.lastOptions).not.toHaveProperty('system')
@@ -1515,28 +1518,28 @@ describe('default one-shot summarizer', () => {
     )
     const policyAdapter = new ScriptedAdapter([{ type: 'text', text: 'policy summary' }])
     ctx.llm.registerAdapter(['policy-summary'], policyAdapter)
-    const prefix: Message = createUserMessage({
-      content: [{ type: 'text', text: 'warm prefix' }],
-      source: { kind: 'test' },
+    const session = conversation(3, undefined, 'WARM SYSTEM')
+    session.append('request/header', {
+      header: { config: { provider: MODEL, model: MODEL } },
+      reason: 'resume',
     })
+    const nodes = [...session.surface.nodes]
+    const prefix = session.deriveMessages().slice(0, 3)
 
-    const system = createSystemMessage('WARM SYSTEM')
-    const output = await compact.runSummarize({
-      messages: [system, prefix],
-    }, agent(conversation(1), 'fallback'))
+    const result = await compact.compactRegion(nodes[1]!, nodes[2]!, agent(session, 'fallback'), SIGNAL)
 
-    expect(output).toMatchObject({
-      provider: 'policy-summary',
-      model: 'policy-summary',
-      maxTokens: 222,
-    })
     expect(policyAdapter.lastOptions).toMatchObject({
       provider: 'policy-summary',
       model: 'policy-summary',
       maxTokens: 222,
     })
     expect(policyAdapter.lastOptions).not.toHaveProperty('system')
-    expect(policyAdapter.lastOptions?.messages.slice(0, -1)).toEqual([system, prefix])
+    expect(policyAdapter.lastOptions?.messages.slice(0, -1)).toEqual(prefix)
+    expect(session.snapshotEvents().find(event => event.seq === result.summarySeq)?.data).toMatchObject({
+      provider: 'policy-summary',
+      model: 'policy-summary',
+      maxTokens: 222,
+    })
   })
 
   it('resolves the latest routed provider/model before the AgentOptions pair', async () => {

@@ -253,7 +253,7 @@ Reply with one JSON object and nothing else: {"verdict": "accept" or "reject", "
 - **候选按顺序处理** — 一轮依次起草并度量其候选；`trial.concurrency` 只并行同一次度量中的试验。
 - **推迟的参考实现部分** — 逐任务摘要、预测记分板和对已保存轮次的重新裁决尚未实现。
 - **仅限命令** — 运行只能在带有后台任务的 composition 中从 `/self-improve` 启动；没有模型工具。
-- **没有录制会话快照** — 该命令的会话记录，即 `command/run` 与 `command/done` 这一对事件，没有录制会话快照；Web 快照通道可以录制它，`tests/loader-composition.spec.ts` 通过真实 composition 覆盖该命令。
+- **没有录制会话快照** — 该命令的会话记录，即 `command/run` 与 `command/done` 这一对事件，没有录制会话快照；Web 快照通道可以录制它。`tests/loader-composition.spec.ts` 通过真实 composition 覆盖该命令，`tests/real-runtime.e2e.ts` 让每次试验都在全新的 `dsh` 运行时中针对本地替身模型端点进行度量。
 
 <a id="dev-note"></a>
 ### 开发备注

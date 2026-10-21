@@ -30,4 +30,4 @@ Status: implemented
 
 ## 测试
 
-单元 spec 覆盖选择算术、编辑预算、历史摘要、校准、critic、proposer 的动作协议及其路径检查、任务集校验与检查、针对真实仓库的 git store、运行目录校验，以及循环的各道门禁与恢复；试验针对 SDK client 的脚本化运行时执行。`loader-composition.spec.ts` 通过 Loader 启动本插件，配合 commands、后台任务、真实的 subprocess 提供方和脚本化模型，度量 baseline，在一轮中接受一个新 skill，并断言 evolve 分支、历史、held-out 分数，以及释放插件后命令被移除。
+单元 spec 覆盖选择算术、编辑预算、历史摘要、校准、critic、proposer 的动作协议及其路径检查、任务集校验与检查、针对真实仓库的 git store、运行目录校验，以及循环的各道门禁与恢复；试验针对 SDK client 的脚本化运行时执行。`loader-composition.spec.ts` 通过 Loader 启动本插件，配合 commands、后台任务、真实的 subprocess 提供方和脚本化模型，度量 baseline，在一轮中接受一个新 skill，并断言 evolve 分支、历史、held-out 分数，以及释放插件后命令被移除。`real-runtime.e2e.ts` 运行一次 baseline、一轮和一次 held-out 度量，每次试验都在通过 SDK client 启动的全新 `dsh` 运行时中进行；运行时的策略路由连接到一个本地 OpenAI 兼容替身，它只在请求带有输出约定时才按格式作答，因此只有当演化后的 `AGENTS.md` 进入运行时的模型请求时，该轮才会接受这项指令修改。

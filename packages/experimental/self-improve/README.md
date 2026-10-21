@@ -253,7 +253,7 @@ Every trial is an independent runtime; nothing carries between trials or into th
 - **Sequential candidates** — a round drafts and measures its candidates one after another; `trial.concurrency` parallelizes trials within one measurement.
 - **Deferred reference parts** — per-task digests, the prediction scoreboard, and re-adjudication of stored rounds are not implemented.
 - **Command only** — runs start from `/self-improve` in compositions with background jobs; there is no model tool.
-- **No recorded-session snapshot** — the command's transcript, its `command/run` and `command/done` pair, has no recorded-session snapshot; the Web snapshot lane can record one, and `tests/loader-composition.spec.ts` covers the command through a real composition.
+- **No recorded-session snapshot** — the command's transcript, its `command/run` and `command/done` pair, has no recorded-session snapshot; the Web snapshot lane can record one. `tests/loader-composition.spec.ts` covers the command through a real composition, and `tests/real-runtime.e2e.ts` measures each trial in a fresh `dsh` runtime against a local stand-in model endpoint.
 
 <a id="dev-note"></a>
 ### Dev Note

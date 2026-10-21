@@ -165,6 +165,20 @@ describe('SelfImproveRun rounds', () => {
     expect(domain.evaluations.filter(request => request.job === 'r2B')).toHaveLength(2)
   })
 
+  it('raises the domain\'s objections before the critic and lets the proposer repair them', async () => {
+    const { run, domain, proposer, critic, directory } = await harness()
+    await run.baseline()
+    domain.objections.push(['overlay.patch.yml entry 1 (sandbox-policy): its config cannot change'], [], ['still broken'], ['still broken'])
+    await run.round()
+    expect(domain.screened).toEqual(['/runs/r0A', '/runs/r0A', '/runs/r0B', '/runs/r0B'])
+    expect(proposer.requests.find(request => request.checkout.name === 'r0A' && request.repair !== undefined)?.repair)
+      .toEqual({ reasons: ['overlay.patch.yml entry 1 (sandbox-policy): its config cannot change'], riskNotes: [], declared: [edit()] })
+    expect(critic.requests.filter(request => request.summary === 'draft r0A')).toHaveLength(1)
+    expect(await directory.readCandidate(0, 'A')).toMatchObject({ status: 'ready' })
+    expect(await directory.readCandidate(0, 'B')).toMatchObject({ status: 'gated', outcome: 'critic-rejected', detail: 'still broken' })
+    expect(critic.requests.some(request => request.summary === 'draft r0B')).toBe(false)
+  })
+
   it('contains a failed evaluation and rethrows cancellation', async () => {
     const { run, domain, directory } = await harness()
     await run.baseline()

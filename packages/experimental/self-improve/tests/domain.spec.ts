@@ -5,10 +5,11 @@ import { join } from 'node:path'
 import type { DeepSeekHarnessOptions } from '@deepseek-ai/dsh-sdk-client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EvaluationJobId, TaskId } from '../src/brand.ts'
-import { FIRST_REQUEST_MEASURE, OVERLAY_FILE, SuiteDomain, pool } from '../src/domain.ts'
+import { FIRST_REQUEST_MEASURE, SuiteDomain, pool } from '../src/domain.ts'
 import type { SuiteDomainSettings } from '../src/domain.ts'
+import { OVERLAY_FILE, describeOverlayRules } from '../src/overlay.ts'
 import type { Suite } from '../src/suite.ts'
-import { DSH_COMPONENTS } from '../src/evolved-directory.ts'
+import { DSH_COMPONENTS, DSH_OVERLAY_RULES } from '../src/evolved-directory.ts'
 import { useFakeRuntime } from './fake-runtime.ts'
 import { evaluation } from './fixtures.ts'
 
@@ -21,7 +22,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
 })
 
-async function setup(overrides: Partial<SuiteDomainSettings> = {}, overlay = true) {
+async function setup(overrides: Partial<SuiteDomainSettings> = {}, overlay: string | undefined = '[]\n') {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-self-improve-domain-')))
   roots.push(root)
   const checkout = join(root, 'checkout')
@@ -29,7 +30,7 @@ async function setup(overrides: Partial<SuiteDomainSettings> = {}, overlay = tru
   await mkdir(join(evolved, 'skills', 'check'), { recursive: true })
   await writeFile(join(evolved, 'AGENTS.md'), 'Work carefully.\n')
   await writeFile(join(evolved, 'skills', 'check', 'SKILL.md'), '# Check\n')
-  if (overlay) await writeFile(join(evolved, OVERLAY_FILE), '[]\n')
+  if (overlay !== undefined) await writeFile(join(evolved, OVERLAY_FILE), overlay)
   const fixture = join(root, 'fixtures', 'hello')
   await mkdir(fixture, { recursive: true })
   await writeFile(join(fixture, 'seed.txt'), 'seed\n')
@@ -44,18 +45,26 @@ async function setup(overrides: Partial<SuiteDomainSettings> = {}, overlay = tru
     ]),
   }
   const runCommand = vi.fn(async (_argv: readonly string[], cwd: string) => existsSync(join(cwd, 'seed.txt')))
-  const homes: { readonly agents: string; readonly skill: string; readonly agentsHome: string | undefined }[] = []
+  const homes: {
+    readonly agents: string
+    readonly skill: string
+    readonly agentsHome: string | undefined
+    readonly overlay: string | undefined
+  }[] = []
   fake = useFakeRuntime((options: DeepSeekHarnessOptions) => {
     const home = options.dshHome ?? ''
+    const overlay = options.patches?.find(patch => patch.endsWith(OVERLAY_FILE))
     homes.push({
       agents: readFileSync(join(home, 'AGENTS.md'), 'utf8'),
       skill: readFileSync(join(home, 'skills', 'check', 'SKILL.md'), 'utf8'),
       agentsHome: options.env?.['DSH_AGENTS_HOME'],
+      overlay: overlay === undefined ? undefined : readFileSync(overlay, 'utf8'),
     })
   })
   const settings: SuiteDomainSettings = {
     suite,
     componentSet: DSH_COMPONENTS,
+    overlayRules: DSH_OVERLAY_RULES,
     runRoot: join(root, 'run'),
     evolvedDirectory: 'evolved',
     scratch: join(root, 'scratch'),
@@ -90,7 +99,9 @@ describe('SuiteDomain', () => {
     expect(domain.smokeTasks(evaluation('base', { other: [0, 0], hello: [1, 0] }))).toEqual(['hello'])
     expect(domain.smokeTasks(evaluation('base', {}))).toEqual(['hello'])
     expect(new SuiteDomain({ ...settings, suite: { ...settings.suite, smoke: [TaskId('other')] } }).smokeTasks(evaluation('base', {}))).toEqual(['other'])
-    expect(domain.briefs).toEqual(settings.suite.briefs)
+    expect(domain.briefs).toEqual({ analyst: 'a', proposer: `${describeOverlayRules(DSH_OVERLAY_RULES)}\n\np`, critic: 'c' })
+    const unbriefed = new SuiteDomain({ ...settings, suite: { ...settings.suite, briefs: { ...settings.suite.briefs, proposer: '' } } })
+    expect(unbriefed.briefs.proposer).toBe(describeOverlayRules(DSH_OVERLAY_RULES))
     expect(domain.componentSet).toBe(DSH_COMPONENTS)
   })
 
@@ -100,7 +111,7 @@ describe('SuiteDomain', () => {
     expect(result.perTask.get(TaskId('hello'))?.rewards).toEqual([1, 1])
     expect(result.perTask.get(TaskId('other'))?.rewards).toEqual([0, 0])
     expect(result).toMatchObject({ score: 0.5, cost: undefined, missing: 0, measures: {} })
-    expect(fake?.launches.map(launch => launch.patches)).toEqual(Array.from({ length: 4 }, () => [join(checkout, 'evolved', OVERLAY_FILE), '/policy.patch.yml']))
+    expect(fake?.launches.map(launch => launch.patches)).toEqual(Array.from({ length: 4 }, () => ['/policy.patch.yml']))
     expect(homes.map(home => [home.agents, home.skill])).toEqual(Array.from({ length: 4 }, () => ['Work carefully.\n', '# Check\n']))
     expect(homes.every(home => home.agentsHome?.startsWith(join(root, 'scratch')) === true)).toBe(true)
     expect(runCommand).toHaveBeenCalledTimes(2)
@@ -120,7 +131,7 @@ describe('SuiteDomain', () => {
   })
 
   it('counts a failed runtime as a missing trial, runs it again, and reports it from the smoke check', async () => {
-    const { domain, checkout, root } = await setup({ environment: () => ({ FAKE_INIT_ERROR: '1' }) }, false)
+    const { domain, checkout, root } = await setup({ environment: () => ({ FAKE_INIT_ERROR: '1' }) }, undefined)
     const smoke = await domain.smoke(request(checkout, 's1', ['other'], 1))
     expect(smoke).toEqual({ ok: false, detail: '1 of 1 smoke trial(s) produced no result: other#0: scripted init failure' })
     expect(fake?.launches[0]?.patches).toEqual(['/policy.patch.yml'])
@@ -134,6 +145,31 @@ describe('SuiteDomain', () => {
   it('passes a smoke check whose trials all ran', async () => {
     const { domain, checkout } = await setup()
     expect(await domain.smoke(request(checkout, 's2', ['other'], 1))).toEqual({ ok: true, detail: '1 smoke trial(s) ran' })
+  })
+
+  it('hands each trial a JSON copy of the checked overlay, beside its workspace', async () => {
+    const overlay = '# tuned\n- id: compaction-basic\n  config:\n    thresholdRatio: 0.6\n- id: tool-web\n  disabled: true\n'
+    const { domain, checkout, homes, root } = await setup({}, overlay)
+    expect(await domain.screen(checkout)).toEqual([])
+    await domain.evaluate(request(checkout, 'j1', ['other'], 1))
+    const patches = fake?.launches.map(launch => launch.patches) ?? []
+    expect(patches).toHaveLength(1)
+    expect(patches[0]?.[1]).toBe('/policy.patch.yml')
+    expect(patches[0]?.[0]?.startsWith(join(root, 'scratch', 'trial-'))).toBe(true)
+    expect(homes.map(home => home.overlay)).toEqual(['[{"id":"compaction-basic","config":{"thresholdRatio":0.6}},{"id":"tool-web","disabled":true}]\n'])
+  })
+
+  it('refuses to measure a checkout whose overlay breaks the rules', async () => {
+    const { domain, checkout } = await setup({}, '- id: sandbox-policy\n  config:\n    mode: danger-full-access\n')
+    const objection = 'overlay.patch.yml entry 1 (sandbox-policy): its config cannot change; entries whose config can change: compaction-basic, tool-result-pruner, spill-policy, system-prompt, repeat-tool-reminder'
+    expect(await domain.screen(checkout)).toEqual([objection])
+    await expect(domain.evaluate(request(checkout, 'j1', ['other'], 1))).rejects.toThrow(`self-improve overlay of ${checkout} breaks the overlay rules: ${objection}`)
+    expect(fake?.launches).toEqual([])
+  })
+
+  it('screens a checkout without an overlay as acceptable', async () => {
+    const { domain, checkout } = await setup({}, undefined)
+    expect(await domain.screen(checkout)).toEqual([])
   })
 
   it('guards the growth of the first request\'s prompt', async () => {

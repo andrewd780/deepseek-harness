@@ -40,7 +40,7 @@ import { createAnalyst, createProposer } from './roles.ts'
 import { loadRunSpec } from './spec.ts'
 import type { RunSpec } from './spec.ts'
 import { loadSuite } from './suite.ts'
-import { DSH_CRITIC_PATTERNS, EVOLVED_FILE_EXTENSIONS, DSH_COMPONENTS, taskNamePatterns } from './evolved-directory.ts'
+import { DSH_CRITIC_PATTERNS, DSH_OVERLAY_RULES, EVOLVED_FILE_EXTENSIONS, DSH_COMPONENTS, taskNamePatterns } from './evolved-directory.ts'
 
 declare module '@deepseek-ai/dsh-jobs' {
   interface JobKindMap {
@@ -229,6 +229,7 @@ export async function openRun(
   const domain = new SuiteDomain({
     suite,
     componentSet: DSH_COMPONENTS,
+    overlayRules: DSH_OVERLAY_RULES,
     runRoot,
     evolvedDirectory: spec.evolvedDirectory,
     scratch: config.scratchDirectory.length > 0 ? config.scratchDirectory : join(tmpdir(), 'dsh-self-improve'),

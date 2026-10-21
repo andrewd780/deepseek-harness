@@ -1,5 +1,5 @@
 /**
- * The component set and leakage patterns of a dsh evolved directory:
+ * The component set, leakage patterns, and overlay rules of a dsh evolved directory:
  * a profile overlay (`overlay.patch.yml`), user-global instructions
  * (`AGENTS.md`), and skills (`skills/`).
  *
@@ -7,6 +7,7 @@
  */
 
 import type { ComponentSet } from './components.ts'
+import type { OverlayRules } from './overlay.ts'
 import type { CriticPattern } from './types.ts'
 
 /**
@@ -20,7 +21,7 @@ export const DSH_COMPONENTS: ComponentSet = {
   signals: [
     { component: 'skill', patterns: [/^(?:\+\+\+|---) [ab]\/(?:.*\/)?skills\//m] },
     { component: 'memory', patterns: [/^\+.*\b(?:memory|memories|remember|recall)\b/im] },
-    { component: 'client_tool', patterns: [/^\+.*(?:dsh-tool-|dsh-mcp|\bmcp\b)/im] },
+    { component: 'client_tool', patterns: [/^\+.*(?:dsh-tool-|dsh-mcp|\bmcp\b)/im, /^\+\s*disabled:\s*true\b/m] },
     { component: 'subagent', patterns: [/^\+.*\b(?:subagents?|delegat\w*)\b/im] },
     { component: 'context_mgmt', patterns: [/^\+.*(?:compaction|headroom|ratio|pruner|spill)/im] },
     { component: 'output_plumbing', patterns: [/^\+.*(?:headChars|tailChars|maxResultChars|truncat|maxBytes)/im] },
@@ -28,6 +29,24 @@ export const DSH_COMPONENTS: ComponentSet = {
     { component: 'config', patterns: [/^(?:\+\+\+|---) [ab]\/(?:.*\/)?overlay\.patch\.yml$/m] },
   ],
   fallback: 'prompt',
+}
+
+/**
+ * What a dsh candidate's overlay may change: settings of compaction,
+ * tool-result pruning, output spilling, the system prompt, and the
+ * repeated-tool reminder, and turning tools off. Entries that load plugins,
+ * start processes, route models, or set permissions and the sandbox stay with
+ * the operator's policy patches.
+ */
+export const DSH_OVERLAY_RULES: OverlayRules = {
+  entries: {
+    'compaction-basic': ['thresholdRatio', 'headroomTokens', 'retainRatio', 'retainTokens', 'maxTokens', 'compactionRetries', 'maxOverflowRetries'],
+    'tool-result-pruner': ['thresholdChars', 'headChars', 'tailChars'],
+    'spill-policy': ['maxInlineTokens'],
+    'system-prompt': ['includeHarnessIdentity', 'includeRuntimeContext', 'personaPrefix', 'personaSuffix', 'toolOrder'],
+    'repeat-tool-reminder': ['thresholds', 'include', 'exclude', 'argumentsPreviewChars'],
+  },
+  disablePrefix: 'tool-',
 }
 
 /** File extensions the proposer may create in a dsh evolved directory. */

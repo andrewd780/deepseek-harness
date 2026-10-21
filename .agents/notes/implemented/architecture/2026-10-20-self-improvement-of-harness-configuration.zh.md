@@ -10,7 +10,7 @@ Status: implemented
 
 ## 决策
 
-`@deepseek-ai/dsh-experimental-self-improve` 用 TypeScript 重新实现参考实现的循环，演化一个 dsh 配置目录：profile overlay、用户全局 `AGENTS.md` 和 skills，由操作者的仓库跟踪。每个候选是一个拥有独立 git 检出目录的分支；被接受的候选快进 evolve 分支，从不改变操作者的工作树或在用配置。一次试验在通过 SDK client 启动的全新 `dsh` 运行时中执行一个任务：候选的 overlay 先于冻结的策略补丁应用，工作区、Harness home 和 agents home 都是全新的，且位于任何仓库之外；任务的检查为其打分，其成本是该运行时中每个 Session 的精确轮次用量。analyst、proposer 和 critic 在任何 Session 之外调用 `ctx.llm`，运行目录保存每份草稿的模型交互和每个判定。运行只能通过 `/self-improve` 命令启动，作为由调用 agent 拥有的后台任务。[包 README](../../../../packages/experimental/self-improve/README.zh.md) 负责操作规则。
+`@deepseek-ai/dsh-experimental-self-improve` 用 TypeScript 重新实现参考实现的循环，演化一个 dsh 配置目录：profile overlay、用户全局 `AGENTS.md` 和 skills，由操作者的仓库跟踪。每个候选是一个拥有独立 git 检出目录的分支；被接受的候选快进 evolve 分支，从不改变操作者的工作树或在用配置。一次试验在通过 SDK client 启动的全新 `dsh` 运行时中执行一个任务：候选的 overlay 先于冻结的策略补丁应用，工作区、Harness home 和 agents home 都是全新的，且位于任何仓库之外；任务的检查为其打分，其成本是该运行时中每个 Session 的精确轮次用量。每次试验都把 overlay 作为配置加载，而配置可能加载插件、启动进程或放宽沙箱，因此候选的 overlay 只能设置一份固定列表中的调优设置并关闭工具；插件在审查之前检查它，试验加载已检查条目的 JSON 副本。analyst、proposer 和 critic 在任何 Session 之外调用 `ctx.llm`，运行目录保存每份草稿的模型交互和每个判定。运行只能通过 `/self-improve` 命令启动，作为由调用 agent 拥有的后台任务。[包 README](../../../../packages/experimental/self-improve/README.zh.md) 负责操作规则。
 
 ## 考虑过的替代方案
 
@@ -30,4 +30,4 @@ Status: implemented
 
 ## 测试
 
-单元 spec 覆盖选择算术、编辑预算、历史摘要、校准、critic、proposer 的动作协议及其路径检查、任务集校验与检查、针对真实仓库的 git store、运行目录校验，以及循环的各道门禁与恢复；试验针对 SDK client 的脚本化运行时执行。`loader-composition.spec.ts` 通过 Loader 启动本插件，配合 commands、后台任务、真实的 subprocess 提供方和脚本化模型，度量 baseline，在一轮中接受一个新 skill，并断言 evolve 分支、历史、held-out 分数，以及释放插件后命令被移除。`real-runtime.e2e.ts` 运行一次 baseline、一轮和一次 held-out 度量，每次试验都在通过 SDK client 启动的全新 `dsh` 运行时中进行；运行时的策略路由连接到一个本地 OpenAI 兼容替身，它只在请求带有输出约定时才按格式作答，因此只有当演化后的 `AGENTS.md` 进入运行时的模型请求时，该轮才会接受这项指令修改。
+单元 spec 覆盖选择算术、编辑预算、历史摘要、校准、critic、overlay 规则及每种被拒形式和它们在审查之前与任何试验之前的执行、proposer 的动作协议及其路径检查、任务集校验与检查、针对真实仓库的 git store、运行目录校验，以及循环的各道门禁与恢复；试验针对 SDK client 的脚本化运行时执行。`loader-composition.spec.ts` 通过 Loader 启动本插件，配合 commands、后台任务、真实的 subprocess 提供方和脚本化模型，度量 baseline，在一轮中接受一个新 skill，并断言 evolve 分支、历史、held-out 分数，以及释放插件后命令被移除。`real-runtime.e2e.ts` 运行一次 baseline、一轮和一次 held-out 度量，每次试验都在通过 SDK client 启动的全新 `dsh` 运行时中进行；运行时的策略路由连接到一个本地 OpenAI 兼容替身，它只在请求带有输出约定时才按格式作答，因此只有当演化后的 `AGENTS.md` 进入运行时的模型请求时，该轮才会接受这项指令修改。

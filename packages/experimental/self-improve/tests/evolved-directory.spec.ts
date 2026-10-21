@@ -10,6 +10,7 @@ describe('DSH_COMPONENTS', () => {
     [fileDiff('evolved/skills/review/SKILL.md', 'Check the tests.'), 'skill'],
     [fileDiff('evolved/AGENTS.md', 'Remember the plan between steps.'), 'memory'],
     [fileDiff('evolved/overlay.patch.yml', '- name: \'@deepseek-ai/dsh-tool-web\''), 'client_tool'],
+    [fileDiff('evolved/overlay.patch.yml', '- id: tool-web', '  disabled: true'), 'client_tool'],
     [fileDiff('evolved/AGENTS.md', 'Delegate independent searches to a subagent.'), 'subagent'],
     [fileDiff('evolved/overlay.patch.yml', '    headroomRatio: 0.3'), 'context_mgmt'],
     [fileDiff('evolved/overlay.patch.yml', '    maxResultChars: 8000'), 'output_plumbing'],

@@ -97,6 +97,9 @@ export class FakeDomain implements SelfImproveDomain {
   readonly missing = new Map<string, number[]>()
   readonly failures = new Map<string, unknown>()
   smokeResult: (request: EvaluationRequest) => SmokeResult = () => ({ ok: true, detail: 'ran' })
+  /** Objections per screening, consumed in order; screenings past the queue raise none. */
+  readonly objections: (readonly string[])[] = []
+  readonly screened: string[] = []
   guardResult: (incumbent: EvaluationResult, candidate: EvaluationResult) => readonly string[] = () => []
   traces = true
 
@@ -127,6 +130,11 @@ export class FakeDomain implements SelfImproveDomain {
   async smoke(request: EvaluationRequest): Promise<SmokeResult> {
     this.smokes.push(request)
     return this.smokeResult(request)
+  }
+
+  async screen(root: string): Promise<readonly string[]> {
+    this.screened.push(root)
+    return this.objections.shift() ?? []
   }
 
   guards(incumbent: EvaluationResult, candidate: EvaluationResult): readonly string[] {

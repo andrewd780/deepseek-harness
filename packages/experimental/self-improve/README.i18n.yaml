@@ -21,17 +21,17 @@
   en: a37a63a9f8ad8905
   zh: 7b05f54f21318fae
 /deepseek-ai-dsh-experimental-self-improve/use-this-package/prepare-a-run:
-  en: cee24f24374bbccd
-  zh: e5ca34807ae5bff3
+  en: 4e03bfdbc9ec470b
+  zh: 6ed5d844a3fd037f
 /deepseek-ai-dsh-experimental-self-improve/use-this-package/run-it:
   en: ed8a18492d153398
   zh: 0e334cb4e42746b4
 /deepseek-ai-dsh-experimental-self-improve/use-this-package/what-a-round-does:
-  en: e68d16278db62ed8
-  zh: 066866fe11f0bddb
+  en: e828622da586ae03
+  zh: 681243abc6f3ecce
 /deepseek-ai-dsh-experimental-self-improve/understand-the-implementation:
-  en: 547940061c49e663
-  zh: 06c3616432634d06
+  en: a32113a73243052c
+  zh: b0c7f9c03affe8fb
 /deepseek-ai-dsh-experimental-self-improve/further-exploration:
   en: 3a2e858371d06dd7
   zh: 9ca5e1dfcc026d85
@@ -62,6 +62,9 @@
 /deepseek-ai-dsh-experimental-self-improve/model-experience/proposer-requests/what-the-model-sees/proposer-system-text:
   en: 96623cee010084ca
   zh: 1420ce31589dffab
+/deepseek-ai-dsh-experimental-self-improve/model-experience/proposer-requests/what-the-model-sees/overlay-rules-paragraph:
+  en: 0720f032e70c7741
+  zh: 4d71b172d8388963
 /deepseek-ai-dsh-experimental-self-improve/model-experience/proposer-requests/token-effect:
   en: 502e37926b5f1f13
   zh: 47bb02d26686734a
@@ -87,8 +90,8 @@
   en: c47010e290f1aa8d
   zh: e97aade41e4796fc
 /deepseek-ai-dsh-experimental-self-improve/model-experience/trial-runtimes/what-the-model-sees:
-  en: 79187d38480a9681
-  zh: c6b7baa69f085c32
+  en: 70b3d133b49b761e
+  zh: bca065b0a01b926a
 /deepseek-ai-dsh-experimental-self-improve/model-experience/trial-runtimes/token-effect:
   en: 6e46717395eb76d4
   zh: e1acce7e22e1c4cc
@@ -96,8 +99,8 @@
   en: 5f16dc756be2649d
   zh: 1209ffc0d1079fa6
 /deepseek-ai-dsh-experimental-self-improve/known-limitations-and-deferred-work:
-  en: c24f885b942f6757
-  zh: 9c148de2037ffcb7
+  en: 12ed31ced8497583
+  zh: 18076252462c50ee
 /deepseek-ai-dsh-experimental-self-improve/known-limitations-and-deferred-work/dev-note:
   en: ea970cf989d6cbda
   zh: 7b062ad2bcf6a0eb

@@ -41,8 +41,8 @@ The runs directory, the trial scratch directory, and process limits are in the [
 
 A run uses four kinds of files in a git repository:
 
-1. **Evolved directory** — a tracked directory, outside the runs directory, holding any of `overlay.patch.yml` (a profile patch every trial applies before the policy patches), `AGENTS.md` (copied into each trial's Harness home as user-global instructions), and `skills/` (copied there as user skills).
-2. **Policy patches** — frozen profile patches applied after the overlay: the trial's model rows, permissions, and every row a candidate must not change. Trials run without a person, so the patches must grant the permissions the tasks need.
+1. **Evolved directory** — a tracked directory, outside the runs directory, holding any of `overlay.patch.yml` (a profile patch every trial applies before the policy patches), `AGENTS.md` (copied into each trial's Harness home as user-global instructions), and `skills/` (copied there as user skills). The overlay may only set the compaction, tool-result pruning, output spilling, system prompt, and repeated-tool reminder settings that [`DSH_OVERLAY_RULES`](src/evolved-directory.ts) lists, and turn tools off; a measurement whose overlay breaks these rules fails before any trial starts, and each trial loads a JSON copy of the checked entries.
+2. **Policy patches** — frozen profile patches applied after the overlay: the trial's model rows, permissions, sandbox mode, and every row a candidate must not change. Trials run without a person, so the patches must grant the permissions the tasks need.
 3. **Task suite** — a JSON file of tasks, each with a prompt, an optional starting workspace, a split (`evolve` or `heldout`), and checks: an `answer` pattern for the final response, a `file` pattern for a file the trial leaves, or a `command` that must exit 0 in the workspace. A trial's reward is the fraction of its checks that pass. [`src/suite.ts`](src/suite.ts) defines the format.
 4. **Run spec** — a JSON file naming the suite, the evolved directory, the trial route, the operator variables trials receive, the route of the search roles, and `delta`, the noise band, as a number or `"calibrate"`. Omitted constants take the reference coding instance's values: 20 rounds, 2 candidates per round, 2 trials per task, and an edit budget annealed from 4 to 1. [`src/spec.ts`](src/spec.ts) defines the format.
 
@@ -75,7 +75,7 @@ Accepted candidates move the evolve branch, `self-improve/<name>` unless the spe
 ### What a round does
 
 1. The analyst reads the worst trial of the weakest tasks and the best trial of the strongest, and writes one report for the round.
-2. Each candidate gets its own checkout of the incumbent. The proposer edits the evolved directory there and declares each edit's component and hypothesis. The edit budget, the reviewer, and a reserved exploration slot screen the change, and rejections return to the proposer for a bounded number of repairs.
+2. Each candidate gets its own checkout of the incumbent. The proposer edits the evolved directory there and declares each edit's component and hypothesis. The edit budget, the overlay rules, the reviewer, and a reserved exploration slot screen the change, and rejections return to the proposer for a bounded number of repairs.
 3. Each declared component is checked against the diff, the candidate is committed, and a smoke check confirms that it runs.
 4. Fresh runtimes measure every screened candidate on the evolve tasks; a trial that produces no result scores 0 and counts in the denominator.
 5. A candidate is admissible when its score is at least the best score so far minus the noise band, it passes the domain guards, and it meets the cost rule. A gain above the band may add tokens in proportion to the gain; within the band, only a token saving or a new structural component admits it. The highest admissible score wins.
@@ -100,7 +100,8 @@ The edit history, the prune set of components whose recent edits gained nothing,
 | [`src/critic.ts`](src/critic.ts), [`src/roles.ts`](src/roles.ts), [`src/model.ts`](src/model.ts) | Reviewer, analyst, proposer, and their model requests |
 | [`src/domain.ts`](src/domain.ts), [`src/trial.ts`](src/trial.ts), [`src/suite.ts`](src/suite.ts) | Trials in fresh runtimes, checks, and token accounting |
 | [`src/git.ts`](src/git.ts), [`src/directory.ts`](src/directory.ts) | Evolve branch, candidate checkouts, and run files |
-| [`src/evolved-directory.ts`](src/evolved-directory.ts) | Component set and leakage patterns of a dsh evolved directory |
+| [`src/evolved-directory.ts`](src/evolved-directory.ts) | Component set, leakage patterns, and overlay rules of a dsh evolved directory |
+| [`src/overlay.ts`](src/overlay.ts) | Overlay check and the proposer's statement of the rules |
 
 Trials start through the SDK client, which spawns the runtime itself, the subprocess seam's documented exception for SDK-managed transports; git and check commands run through `ctx.subprocess` with inherited repository selectors cleared. Each trial gets a fresh workspace, Harness home, and agents home outside any repository.
 
@@ -164,6 +165,8 @@ One request per turn, including turns whose answer was not one JSON action. Each
 ```markdown
 You improve an agent harness by editing its configuration files in your working directory. The model that runs the harness is fixed and differs from you: improve the harness for that model, using its trajectories as evidence of how it behaves. Only the files in your working directory can change; the tasks, the grader, and the model cannot.
 
+<the overlay rules paragraph>
+
 <the suite's proposer brief>
 
 Reply with exactly one JSON object per turn and nothing else. Actions:
@@ -177,6 +180,12 @@ Reply with exactly one JSON object per turn and nothing else. Actions:
 An edit is one independent change whose effect can be measured on its own; parts that only work together are one edit. Declare at most the edit budget the context gives. Name each edit's component from the list; it is checked against your changes. A candidate holding a reserved exploration slot must change at least one of the untried components it lists. Removing machinery listed under the prune set is a legitimate edit.
 
 Never encode task names, task-specific values, or expected answers: the harness is scored on these tasks, and a reviewer rejects such changes before they are measured. There is no abort action: make the best change you can, then call done.
+```
+
+##### Overlay rules paragraph
+
+```markdown
+`overlay.patch.yml` is a YAML list of entries that change the harness configuration. An entry may set `config` for one of these entries, using only the listed keys: compaction-basic (thresholdRatio, headroomTokens, retainRatio, retainTokens, maxTokens, compactionRetries, maxOverflowRetries); tool-result-pruner (thresholdChars, headChars, tailChars); spill-policy (maxInlineTokens); system-prompt (includeHarnessIdentity, includeRuntimeContext, personaPrefix, personaSuffix, toolOrder); repeat-tool-reminder (thresholds, include, exclude, argumentsPreviewChars). An entry may also turn off a tool, an entry whose id starts with "tool-", with `disabled: true`. A `config` replaces that entry's whole configuration. Nothing else may appear in the file, and YAML tags, anchors, and aliases are not allowed.
 ```
 
 #### Token effect
@@ -231,7 +240,7 @@ An independent request; the system text repeats for every candidate of a suite.
 
 #### What the model sees
 
-The policy model sees an ordinary dsh Session in a fresh runtime of the spec's profile, `sdk` by default, with the candidate's overlay applied before the policy patches, its `AGENTS.md` as user-global instructions, its skills as user skills, and the task prompt as the first user message, in a fresh copy of the task's workspace. Instructions and skills of the operator's homes and repositories are absent.
+The policy model sees an ordinary dsh Session in a fresh runtime of the spec's profile, `sdk` by default, with the checked entries of the candidate's overlay applied before the policy patches, its `AGENTS.md` as user-global instructions, its skills as user skills, and the task prompt as the first user message, in a fresh copy of the task's workspace. Instructions and skills of the operator's homes and repositories are absent.
 
 #### Token effect
 
@@ -245,8 +254,8 @@ Every trial is an independent runtime; nothing carries between trials or into th
 
 <a id="known-limitations-and-deferred-work"></a>
 
-- **Only configuration evolves** — candidates change the overlay, instructions, and skills; plugin code, tool descriptions, and the agent loop stay out of reach.
-- **Unattended trials** — the policy patches alone decide what a trial may do, and check commands run on the host through the subprocess provider.
+- **Only configuration evolves** — candidates change the overlay's listed settings, instructions, and skills; plugin code, other configuration, tool descriptions, and the agent loop stay out of reach.
+- **Unattended trials** — the trial profile and the policy patches alone decide what a trial may do, and check commands run on the host through the subprocess provider. The dsh sandbox confines a trial's file writes, not its reads or network access.
 - **Cost needs exact usage** — a trial whose turns cannot prove their token usage reports none; when no trial of an evaluation reports tokens, the cost change is 0 and the cost rule admits any gain above the band.
 - **The incumbent is measured once** — candidates are compared with its stored evaluation, and the floor follows the best score so far, so an equally good harness clears it less often as a run proceeds.
 - **One-measurement calibration** — a bootstrap over few trials per task misses run-to-run variance and underestimates the band; calibrate with repeats.

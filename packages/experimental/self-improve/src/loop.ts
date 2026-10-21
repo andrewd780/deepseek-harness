@@ -8,9 +8,10 @@
  * 2. Directives: the annealed edit budget, the stall flag, the components never
  *    tried, the candidate slots a stall reserves for them, and the prune set.
  * 3. Drafts: each variant gets its own checkout of H_t. The proposer edits the
- *    evolved directory; the edit budget, the critic, and a reserved slot's
- *    obligation screen the diff with bounded repair; declared components are
- *    checked against the diff; the candidate is committed and smoke-checked.
+ *    evolved directory; the edit budget, the domain's rules for evolved files,
+ *    the critic, and a reserved slot's obligation screen the candidate with
+ *    bounded repair; declared components are checked against the diff; the
+ *    candidate is committed and smoke-checked.
  * 4. Evaluation of every screened candidate on the evolve tasks.
  * 5. Selection: the noise floor, the cost rule, and the domain guards; the
  *    highest admissible score wins.
@@ -370,7 +371,7 @@ export class SelfImproveRun {
     let proposal = await this.propose(request, 0)
     if (proposal.status !== 'done') return await gate('draft-failed', proposal.summary, proposal.edits)
     let diff = await this.recordDiff(checkout, round, variant, signal)
-    let verdict = await this.screen(diff, proposal, context, 0)
+    let verdict = await this.screen(checkout, diff, proposal, context, 0)
     for (let attempt = 1; verdict.verdict === 'reject' && attempt <= this.settings.repairRounds; attempt += 1) {
       log(`r${round}${variant}: repair ${attempt}/${this.settings.repairRounds}: ${verdict.reasons.join('; ').slice(0, 200)}`)
       const repaired = await this.propose({
@@ -380,7 +381,7 @@ export class SelfImproveRun {
       if (repaired.status !== 'done') break
       proposal = repaired
       diff = await this.recordDiff(checkout, round, variant, signal)
-      verdict = await this.screen(diff, proposal, context, attempt)
+      verdict = await this.screen(checkout, diff, proposal, context, attempt)
     }
     if (verdict.verdict === 'reject') return await gate('critic-rejected', verdict.reasons.join('; '), proposal.edits)
     const edits = proposal.edits.map(edit => ({ ...edit, component: normalizeComponent(edit.component, diff, domain.componentSet) }))
@@ -409,14 +410,20 @@ export class SelfImproveRun {
     return proposal
   }
 
-  /** The edit budget, the critic, and a reserved slot's obligation, in that order. */
-  private async screen(diff: string, proposal: Proposal, context: DraftContext, attempt: number): Promise<CriticVerdict> {
-    const verdict = await this.verdict(diff, proposal, context)
+  /** The edit budget, the domain's objections, the critic, and a reserved slot's obligation, in that order. */
+  private async screen(
+    checkout: CandidateCheckout,
+    diff: string,
+    proposal: Proposal,
+    context: DraftContext,
+    attempt: number,
+  ): Promise<CriticVerdict> {
+    const verdict = await this.verdict(checkout, diff, proposal, context)
     await this.roles.directory.writeRoundRecord(context.round, join(context.variant, `critic-${attempt}.json`), verdict)
     return verdict
   }
 
-  private async verdict(diff: string, proposal: Proposal, context: DraftContext): Promise<CriticVerdict> {
+  private async verdict(checkout: CandidateCheckout, diff: string, proposal: Proposal, context: DraftContext): Promise<CriticVerdict> {
     const declared = proposal.edits
     if (declared.length === 0) return { verdict: 'reject', reasons: ['the candidate declares no edit'], riskNotes: [] }
     if (declared.length > context.budget) {
@@ -426,6 +433,8 @@ export class SelfImproveRun {
         riskNotes: [],
       }
     }
+    const objections = await this.roles.domain.screen(checkout.root)
+    if (objections.length > 0) return { verdict: 'reject', reasons: objections, riskNotes: [] }
     const verdict = await this.roles.critic.review({
       diff,
       summary: proposal.summary,

@@ -5,6 +5,8 @@
  *
  * A checkout's evolved directory may hold:
  * - `overlay.patch.yml`, a profile patch applied before the policy patches;
+ *   a job whose overlay breaks the domain's overlay rules fails before any
+ *   trial starts, and each trial loads a JSON copy of the checked entries;
  * - `AGENTS.md`, copied into each trial's Harness home as user-global instructions;
  * - `skills/`, copied into each trial's Harness home as user skills.
  *
@@ -18,7 +20,7 @@
  * @module @deepseek-ai/dsh-experimental-self-improve/domain
  */
 
-import { cp, mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { validatedSessionEvent } from '@deepseek-ai/dsh-sdk-client'
@@ -28,14 +30,13 @@ import type { EvaluationJobId, TaskId } from './brand.ts'
 import type { ComponentSet } from './components.ts'
 import { aggregate, taskMean } from './evaluate.ts'
 import type { EvaluationResult, TaskResult } from './evaluate.ts'
+import { checkOverlay, describeOverlayRules, OVERLAY_FILE } from './overlay.ts'
+import type { OverlayCheck, OverlayRules } from './overlay.ts'
 import { runChecks } from './suite.ts'
 import type { CheckResult, CommandRunner, Suite } from './suite.ts'
 import { finalResponse, firstRequestInputTokens, renderTrial, runTrial, trialTokens } from './trial.ts'
 import type { TrialEvent, TrialLaunch, TrialRecord } from './trial.ts'
 import type { DomainBriefs, EvaluationRequest, SelfImproveDomain, SmokeResult } from './types.ts'
-
-/** The evolved directory's profile patch. */
-export const OVERLAY_FILE = 'overlay.patch.yml'
 
 /** The measure a prompt-growth guard compares. */
 export const FIRST_REQUEST_MEASURE = 'firstRequestInputTokens'
@@ -44,6 +45,8 @@ export const FIRST_REQUEST_MEASURE = 'firstRequestInputTokens'
 export interface SuiteDomainSettings {
   readonly suite: Suite
   readonly componentSet: ComponentSet
+  /** What a candidate's overlay may change; the proposer's brief opens with them. */
+  readonly overlayRules: OverlayRules
   /** Absolute run directory; trial records live under its `trials/`. */
   readonly runRoot: string
   /** The evolved directory's path relative to a checkout root. */
@@ -85,7 +88,11 @@ export class SuiteDomain implements SelfImproveDomain {
    */
   constructor(private readonly settings: SuiteDomainSettings) {
     this.componentSet = settings.componentSet
-    this.briefs = settings.suite.briefs
+    const briefs = settings.suite.briefs
+    this.briefs = {
+      ...briefs,
+      proposer: [describeOverlayRules(settings.overlayRules), briefs.proposer].filter(text => text.length > 0).join('\n\n'),
+    }
   }
 
   evolveTasks(): readonly TaskId[] {
@@ -125,6 +132,11 @@ export class SuiteDomain implements SelfImproveDomain {
     return [`the first request's prompt grew ${((after / before - 1) * 100).toFixed(1)}% (limit ${(limit * 100).toFixed(1)}%)`]
   }
 
+  async screen(root: string): Promise<readonly string[]> {
+    const overlay = await this.checkOverlay(root)
+    return overlay.ok ? [] : overlay.objections
+  }
+
   async renderTrace(job: EvaluationJobId, task: TaskId, trial: number): Promise<string | undefined> {
     const record = await this.readRecord(job, task, trial)
     if (record === undefined) return undefined
@@ -137,8 +149,11 @@ export class SuiteDomain implements SelfImproveDomain {
   private async measure(
     request: EvaluationRequest,
   ): Promise<{ readonly evaluation: EvaluationResult; readonly failures: readonly string[] }> {
+    const overlay = await this.checkOverlay(request.root)
+    if (!overlay.ok) throw new Error(`self-improve overlay of ${request.root} breaks the overlay rules: ${overlay.objections.join('; ')}`)
+    const patch = overlay.entries.length === 0 ? undefined : `${JSON.stringify(overlay.entries)}\n`
     const slots = request.tasks.flatMap(task => Array.from({ length: request.trials }, (_, trial) => ({ task, trial })))
-    const outcomes = await pool(slots, this.settings.concurrency, async slot => await this.trial(request, slot.task, slot.trial))
+    const outcomes = await pool(slots, this.settings.concurrency, async slot => await this.trial(request, slot.task, slot.trial, patch))
     const perTask = new Map<TaskId, TaskResult>()
     const firstRequests: number[] = []
     for (const task of request.tasks) {
@@ -158,6 +173,12 @@ export class SuiteDomain implements SelfImproveDomain {
     return { evaluation: aggregate(request.job, request.trials, perTask, measures), failures }
   }
 
+  /** The checked overlay of a checkout; a checkout without one has no entries. */
+  private async checkOverlay(root: string): Promise<OverlayCheck> {
+    const text = await readText(join(root, this.settings.evolvedDirectory, OVERLAY_FILE))
+    return text === undefined ? { ok: true, entries: [] } : checkOverlay(text, this.settings.overlayRules)
+  }
+
   private split(split: 'evolve' | 'heldout'): readonly TaskId[] {
     return [...this.settings.suite.tasks.values()].filter(task => task.split === split).map(task => task.id)
   }
@@ -166,8 +187,16 @@ export class SuiteDomain implements SelfImproveDomain {
     return join(this.settings.runRoot, 'trials', job, task, String(trial))
   }
 
-  /** Run one trial unless its result is stored; a runtime failure yields the failure. */
-  private async trial(request: EvaluationRequest, taskId: TaskId, trial: number): Promise<TrialResult | { readonly failure: string }> {
+  /**
+   * Run one trial unless its result is stored; a runtime failure yields the failure.
+   * `patch` is the JSON copy of the checked overlay, written beside the trial's workspace.
+   */
+  private async trial(
+    request: EvaluationRequest,
+    taskId: TaskId,
+    trial: number,
+    patch: string | undefined,
+  ): Promise<TrialResult | { readonly failure: string }> {
     const stored = await this.readResult(request.job, taskId, trial)
     if (stored !== undefined) return stored
     const task = this.settings.suite.tasks.get(taskId)
@@ -185,10 +214,11 @@ export class SuiteDomain implements SelfImproveDomain {
       const evolved = join(request.root, this.settings.evolvedDirectory)
       await copyIfPresent(join(evolved, 'AGENTS.md'), join(home, 'AGENTS.md'))
       await copyIfPresent(join(evolved, 'skills'), join(home, 'skills'))
-      const overlay = join(evolved, OVERLAY_FILE)
+      const overlay = join(scratch, OVERLAY_FILE)
+      if (patch !== undefined) await writeFile(overlay, patch, { mode: 0o600 })
       const launch: TrialLaunch = {
         profile: this.settings.profile,
-        patches: [...await exists(overlay) ? [overlay] : [], ...this.settings.policyPatches],
+        patches: [...patch === undefined ? [] : [overlay], ...this.settings.policyPatches],
         home,
         cwd: workspace,
         provider: this.settings.provider,
@@ -274,14 +304,18 @@ async function copyIfPresent(source: string, target: string): Promise<void> {
   if (await exists(source)) await cp(source, target, { recursive: true })
 }
 
-async function readJson(path: string): Promise<unknown> {
-  let text: string
+async function readText(path: string): Promise<string | undefined> {
   try {
-    text = await readFile(path, 'utf8')
+    return await readFile(path, 'utf8')
   } catch (error) {
     if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') return undefined
     throw error
   }
+}
+
+async function readJson(path: string): Promise<unknown> {
+  const text = await readText(path)
+  if (text === undefined) return undefined
   try {
     const value: unknown = JSON.parse(text)
     return value

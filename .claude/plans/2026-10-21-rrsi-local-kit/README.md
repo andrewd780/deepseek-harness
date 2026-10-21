@@ -4,7 +4,8 @@ Working files for running `/self-improve` against a local Ollama model on your o
 
 ## Before you start
 
-- Your rule: model loads happen only on the Air, under the watchdog. Ollama serving the model is a model load, so run this there, not on the work Mac.
+- Your rule: model loads happen only on the Air, under the watchdog. Ollama serving the model is a model load, so run this there, not on the work Mac. Build there too, with Ollama stopped: the build compiles the whole repository, and its memory use is unmeasured.
+- Trials run a model's shell commands on the machine. The plugin rejects any candidate overlay that could load a plugin, start a process, or change the sandbox, and `policy.patch.yml` keeps the sandbox at `workspace-write`, so a trial can write only inside its own workspace and the temporary area. Reads and network access are not confined: keep files you would not show the model off that machine, or run the kit as a separate macOS user.
 - Ollama running, with the model pulled and served at the 32k window you already use with dsh (`OLLAMA_CONTEXT_LENGTH=32768`, or `num_ctx` in a Modelfile). Note the model tag from `ollama list`.
 - Node `^22.19 || >=24` and pnpm, as for any dsh checkout.
 
@@ -17,7 +18,11 @@ git fetch origin
 git switch -c rrsi-local origin/claude/self-improve-a7gjrz
 git merge origin/claude/deepskee-context-limit-a7gjrz
 pnpm install
+pnpm run verify-third-party-notices
+pnpm run build
 ```
+
+`verify-third-party-notices` is the check the cloud session could not run (it needs every dependency installed); it must pass before this work goes upstream. `pnpm dsh web` serves the built Web client, so the build comes first.
 
 ## 2. Make the run repository
 
@@ -68,4 +73,4 @@ Every action except `status` runs as a background job; its result appears when t
 - Each task moves the score by 0.33, and `delta` is 0.3, so the round accepts a candidate only if it gains a task without losing one. A smoke that ends with "no admissible candidate" is still a complete run.
 - Wall time depends on the model: 8 trials plus the role requests.
 - Locally, tokens cost time, not money; the 1M-token ceiling was set for the DeepSeek route.
-- What was verified without a real model: the run files parse with the plugin's own loaders, both patches compose (`--dump-config`), the mount imports the plugin from source (a planted wrong path fails to import), and the loop measures real `dsh` runtimes end to end against a stand-in model (`tests/real-runtime.e2e.ts`). This kit's run on your model is the first real-model run.
+- What was verified without a real model: the run files parse with the plugin's own loaders, both patches compose (`--dump-config`), the mount imports the plugin from source (a planted wrong path fails to import), the policy patch holds the sandbox at `workspace-write` even under an overlay that sets `danger-full-access`, and the loop measures real `dsh` runtimes end to end against a stand-in model (`tests/real-runtime.e2e.ts`). This kit's run on your model is the first real-model run.

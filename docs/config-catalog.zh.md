@@ -1170,7 +1170,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-experimental-self-improve`
 
 - `inject`: `commands` · `llm` · `subprocess` · `workingDirectory`
-- `source`: [`packages/experimental/self-improve/src/index.ts:45`](../packages/experimental/self-improve/src/index.ts)
+- `source`: [`packages/experimental/self-improve/src/index.ts:46`](../packages/experimental/self-improve/src/index.ts)
 
 ```ts config-catalog
 /** Where runs keep their files, and the limits of the processes they start. */

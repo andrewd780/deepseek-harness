@@ -124,6 +124,14 @@ export interface SelfImproveDomain {
    */
   smoke(request: EvaluationRequest): Promise<SmokeResult>
   /**
+   * Objections to a checkout's evolved files that no review overrules; the
+   * loop raises them before the critic reviews a candidate, and measuring a
+   * checkout with an objection fails.
+   * @param root - absolute path of the checkout root.
+   * @returns one objection per broken rule; empty when the files are acceptable.
+   */
+  screen(root: string): Promise<readonly string[]>
+  /**
    * Non-compensatory criteria a gain cannot buy off.
    * @param incumbent - the incumbent's evaluation.
    * @param candidate - the candidate's evaluation.

@@ -1,0 +1,103 @@
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write packages/experimental/self-improve/README.md
+/:
+  en: 1d6c02b5f607a46e
+  zh: aec66cfaac5dcf1a
+/deepseek-ai-dsh-experimental-self-improve:
+  en: eb94f141761bef21
+  zh: 66004e2e669ab5c5
+/deepseek-ai-dsh-experimental-self-improve/summary:
+  en: 9216678a96ec5bdb
+  zh: d2f6d4f30ca316ea
+/deepseek-ai-dsh-experimental-self-improve/table-of-contents:
+  en: d152484eb41ac6b4
+  zh: 2f8a621b991260a1
+/deepseek-ai-dsh-experimental-self-improve/use-this-package:
+  en: bbff250eba0f1b89
+  zh: 0a618f05cc88ee2b
+/deepseek-ai-dsh-experimental-self-improve/use-this-package/mount-the-command:
+  en: a37a63a9f8ad8905
+  zh: 7b05f54f21318fae
+/deepseek-ai-dsh-experimental-self-improve/use-this-package/prepare-a-run:
+  en: cee24f24374bbccd
+  zh: e5ca34807ae5bff3
+/deepseek-ai-dsh-experimental-self-improve/use-this-package/run-it:
+  en: ed8a18492d153398
+  zh: 0e334cb4e42746b4
+/deepseek-ai-dsh-experimental-self-improve/use-this-package/what-a-round-does:
+  en: e68d16278db62ed8
+  zh: 066866fe11f0bddb
+/deepseek-ai-dsh-experimental-self-improve/understand-the-implementation:
+  en: 547940061c49e663
+  zh: 06c3616432634d06
+/deepseek-ai-dsh-experimental-self-improve/further-exploration:
+  en: 3a2e858371d06dd7
+  zh: 9ca5e1dfcc026d85
+/deepseek-ai-dsh-experimental-self-improve/model-experience:
+  en: 215e7ba838619b7b
+  zh: a311da3843709f90
+/deepseek-ai-dsh-experimental-self-improve/model-experience/analyst-request:
+  en: 9949e10e9051493e
+  zh: cdc843cbb7951f0c
+/deepseek-ai-dsh-experimental-self-improve/model-experience/analyst-request/what-the-model-sees:
+  en: e93d75ae9f25d9d1
+  zh: 28dc12752afef71e
+/deepseek-ai-dsh-experimental-self-improve/model-experience/analyst-request/what-the-model-sees/analyst-system-text:
+  en: afc72ebe3e087292
+  zh: 4fd0eb21e86fede3
+/deepseek-ai-dsh-experimental-self-improve/model-experience/analyst-request/token-effect:
+  en: 6730816b663b346d
+  zh: b3d5805dd8da8bdd
+/deepseek-ai-dsh-experimental-self-improve/model-experience/analyst-request/kv-cache-effect:
+  en: 58b92e61e0fa128a
+  zh: 95c96e8d3e436c66
+/deepseek-ai-dsh-experimental-self-improve/model-experience/proposer-requests:
+  en: edf8ef6254a70758
+  zh: 327022aca86478b4
+/deepseek-ai-dsh-experimental-self-improve/model-experience/proposer-requests/what-the-model-sees:
+  en: d08ef0825f112c7e
+  zh: 629aec911fe62496
+/deepseek-ai-dsh-experimental-self-improve/model-experience/proposer-requests/what-the-model-sees/proposer-system-text:
+  en: 96623cee010084ca
+  zh: 1420ce31589dffab
+/deepseek-ai-dsh-experimental-self-improve/model-experience/proposer-requests/token-effect:
+  en: 502e37926b5f1f13
+  zh: 47bb02d26686734a
+/deepseek-ai-dsh-experimental-self-improve/model-experience/proposer-requests/kv-cache-effect:
+  en: 1fb120aed5a1139a
+  zh: 07dcaa54640a5cbe
+/deepseek-ai-dsh-experimental-self-improve/model-experience/critic-request:
+  en: 21f0c693c0b55b7d
+  zh: e3a255d81a4fae4c
+/deepseek-ai-dsh-experimental-self-improve/model-experience/critic-request/what-the-model-sees:
+  en: be95302a4469b031
+  zh: 116d9de3ecbe8058
+/deepseek-ai-dsh-experimental-self-improve/model-experience/critic-request/what-the-model-sees/critic-system-text:
+  en: a9efd4c20f062846
+  zh: 07937ef1ffc78f0a
+/deepseek-ai-dsh-experimental-self-improve/model-experience/critic-request/token-effect:
+  en: a08a42fc5a8313fb
+  zh: 5e7daed0ad90ca7d
+/deepseek-ai-dsh-experimental-self-improve/model-experience/critic-request/kv-cache-effect:
+  en: 25c624ff42cba1bb
+  zh: 0315e2fb5c985703
+/deepseek-ai-dsh-experimental-self-improve/model-experience/trial-runtimes:
+  en: c47010e290f1aa8d
+  zh: e97aade41e4796fc
+/deepseek-ai-dsh-experimental-self-improve/model-experience/trial-runtimes/what-the-model-sees:
+  en: 79187d38480a9681
+  zh: c6b7baa69f085c32
+/deepseek-ai-dsh-experimental-self-improve/model-experience/trial-runtimes/token-effect:
+  en: 6e46717395eb76d4
+  zh: e1acce7e22e1c4cc
+/deepseek-ai-dsh-experimental-self-improve/model-experience/trial-runtimes/kv-cache-effect:
+  en: 5f16dc756be2649d
+  zh: 1209ffc0d1079fa6
+/deepseek-ai-dsh-experimental-self-improve/known-limitations-and-deferred-work:
+  en: 8bda74352c996b4f
+  zh: 21179cc90d730164
+/deepseek-ai-dsh-experimental-self-improve/known-limitations-and-deferred-work/dev-note:
+  en: ea970cf989d6cbda
+  zh: 7b062ad2bcf6a0eb

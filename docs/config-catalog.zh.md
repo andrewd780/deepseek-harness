@@ -1164,6 +1164,31 @@ export interface Config {
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-experimental-ptc-runtime-python -->
 
+<!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-experimental-self-improve -->
+<a id="deepseek-aidsh-experimental-self-improve"></a>
+
+## `@deepseek-ai/dsh-experimental-self-improve`
+
+- `inject`: `commands` · `llm` · `subprocess` · `workingDirectory`
+- `source`: [`packages/experimental/self-improve/src/index.ts:45`](../packages/experimental/self-improve/src/index.ts)
+
+```ts config-catalog
+/** Where runs keep their files, and the limits of the processes they start. */
+export interface Config {
+  /** Run directories, relative to the repository root; a `.gitignore` excluding everything is written when absent. */
+  runsDirectory?: string
+  /** Absolute parent of each trial's disposable workspace and homes; empty uses the operating system's temporary directory. */
+  scratchDirectory?: string
+  /** Deadline of one git command. */
+  gitTimeoutMs?: number
+  /** Time between a process's termination request and its forced kill. */
+  processGraceMs?: number
+  /** Bytes kept of each process output stream. */
+  maxOutputBytes?: number
+}
+```
+<!-- END GENERATED config-catalog:@deepseek-ai/dsh-experimental-self-improve -->
+
 <!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-experimental-speech-to-text -->
 <a id="deepseek-aidsh-experimental-speech-to-text"></a>
 

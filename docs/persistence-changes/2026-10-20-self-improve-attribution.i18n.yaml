@@ -1,0 +1,28 @@
+# Bilingual-pair consistency record for 2026-10-20-self-improve-attribution.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/persistence-changes/2026-10-20-self-improve-attribution.md
+/:
+  en: 3d5a424ae7d7e46b
+  zh: c22a8e4a62d8cc1a
+/2026-10-20-self-improve-attribution:
+  en: e98938be41a774ae
+  zh: 465cef4620540c81
+/2026-10-20-self-improve-attribution/summary:
+  en: 2577bd00aec73e1b
+  zh: 75ad4ee6fff0faa5
+/2026-10-20-self-improve-attribution/table-of-contents:
+  en: 6cf314a069ceb451
+  zh: 9adff678e9ecab3b
+/2026-10-20-self-improve-attribution/declaration:
+  en: 6907136f28e48c90
+  zh: 02f8298485f3d8e7
+/2026-10-20-self-improve-attribution/compatibility:
+  en: c71298fa9346edba
+  zh: aa3d7a29032ff23d
+/2026-10-20-self-improve-attribution/verification:
+  en: 4c100a2abbef738e
+  zh: 2a85bf4e502aa890
+/2026-10-20-self-improve-attribution/dev-note:
+  en: b75c8458928b72b9
+  zh: 003ba4e17b4b5269

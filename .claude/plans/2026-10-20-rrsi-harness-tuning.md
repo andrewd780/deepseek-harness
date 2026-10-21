@@ -7,6 +7,7 @@ Working planning document for draft PR #2 (branch `claude/self-improve-a7gjrz`, 
 - "Yo can you find this and add it to the deepseek harness", with a screenshot of the first page of arXiv 2609.24972, "RRSI: Regularized Recursive Self-Improvement of Agent Harnesses" (Google Cloud AI Research, UNC-Chapel Hill, Stanford, Washington University in St. Louis).
 - Asked what "add" should mean: "Record it and tune harness with rrsi". Asked where: "This session".
 - The record half is j-research ticket T-0031 (folder 15 of `references/math/` and `workspace/notes/lit-rrsi-harness-2026-10-20.md`). This file is the tuning half.
+- Standing instruction, 2026-10-21: "Be faithful to the paper. Follow the papers wording." Where the paper's text and the reference code differ, the port follows the text; where the text contradicts itself, Andrew decides (D16).
 
 ## What RRSI is (SOURCE, README, and paper v3 depth)
 
@@ -79,7 +80,10 @@ Checked 2026-10-21: Algorithms 1–2, Eqs. 4–17, Table 5, and E.1, rule by rul
 - D12 overlay escapes — decided 2026-10-21, "Allowlist": the plugin checks `overlay.patch.yml` before the critic against a fixed list of settings plus turning tools off, and trials load a JSON copy of the checked entries; the kit's policy patch locks the sandbox at `workspace-write`.
 - D13 push — decided 2026-10-21, "One push, all of it": the sandbox fix, D10, and D11 with tests and docs, then one push with the plan commit, skipping the pre-push typecheck. Spent on the push `94ed34354..b0f48f1c2`.
 - D14 commit hook — decided 2026-10-21, "Skip it; I'll verify locally": this batch's commits skip only the third-party-notices job; Andrew runs `pnpm run verify-third-party-notices` after pulling.
-- D15 past diffs (open, Divergence 3): keep the reference's history view, show capped recent diffs in every proposer request, or let the proposer read a past candidate's diff on demand. The proposer already reads traces on demand (`read_trace`), and each candidate's diff is at `rounds/<t>/<v>/diff.patch`.
+- D15 past diffs — decided 2026-10-21, "Be faithful to the paper. Follow the papers wording.": the proposer's history is the paper's L_t (Eq. 10): measured candidates only, each with its source diff, and the prune set's accepted edits carry their diffs (D.2: the proposer "receives B𝑡 together with any previously accepted edits").
+- D16 closing budget — decided 2026-10-21, "Last round ends at 1": Eq. 4's cosine runs to the last round played, t/(T − 1), with its ceiling kept, so the final round carries b_min as §3.2, Table 5 ("final-round edit budget"), and E.1 say. Coding values: 4 edits for rounds 0–7, 3 for 8–11, 2 for 12–18, 1 for 19 (59 in all; Eq. 4 as printed gives 61 and ends at 2). A one-round run keeps b_max.
+- D17 critic grounds — decided 2026-10-21, "Drop them, follow the paper": the critic keeps the paper's grounds (benchmark-specific content, inert machinery, and §F's declared-component mismatch; grader gaming and run-time memorization count as benchmark-specific content) and drops the reference's lost-safety and unbounded-work criteria. The deterministic security patterns and the overlay allowlist stay.
+- D18 push — decided 2026-10-21, "Yes, one push when done": one push of this branch after the package's tests, coverage, typecheck, lint, and doc gates pass, skipping only the pre-push typecheck.
 
 ## Next session (the real-model smoke)
 

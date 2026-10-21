@@ -1,0 +1,29 @@
+{
+  "name": "local-smoke",
+  "suite": "suite.json",
+  "evolvedDirectory": "evolved",
+  "trial": {
+    "policyPatches": [
+      "policy.patch.yml"
+    ],
+    "provider": "ollama-local",
+    "model": "YOUR_OLLAMA_MODEL",
+    "env": {
+      "OLLAMA_API_KEY": "ollama"
+    },
+    "concurrency": 1
+  },
+  "roles": {
+    "provider": "YOUR_ROLE_PROVIDER",
+    "model": "YOUR_ROLE_MODEL",
+    "maxOutputTokens": 4096,
+    "maxReadCharacters": 20000,
+    "maxDiffCharacters": 20000,
+    "proposerTurns": 12
+  },
+  "delta": 0.3,
+  "rounds": 1,
+  "variants": 1,
+  "trials": 1,
+  "repairRounds": 1
+}

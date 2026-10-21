@@ -1,0 +1,36 @@
+{
+  "briefs": {
+    "analyst": "Tasks are small file and answer exercises run by a local model with a 32k context window.",
+    "critic": "Tasks are small file and answer exercises. Reject an edit that names a task, its file, or its expected content."
+  },
+  "smoke": ["task-greeting"],
+  "tasks": [
+    {
+      "id": "task-greeting",
+      "split": "evolve",
+      "prompt": "Create a file named greeting.txt whose only line is: hello world",
+      "checks": [{ "file": "greeting.txt", "matches": "^hello world\\n?$" }]
+    },
+    {
+      "id": "task-config",
+      "split": "evolve",
+      "prompt": "Create config.json holding a JSON object whose \"port\" key is the number 8080.",
+      "checks": [
+        { "file": "config.json", "matches": "\"port\"\\s*:\\s*8080" },
+        { "command": ["node", "-e", "const c = JSON.parse(require('fs').readFileSync('config.json', 'utf8')); process.exit(c.port === 8080 ? 0 : 1)"], "timeoutMs": 30000 }
+      ]
+    },
+    {
+      "id": "task-multiply",
+      "split": "evolve",
+      "prompt": "What is 17 times 3? Reply with only the number.",
+      "checks": [{ "answer": "^\\s*51\\s*$" }]
+    },
+    {
+      "id": "task-notes",
+      "split": "heldout",
+      "prompt": "Create notes.md whose first line is the Markdown heading: # Notes",
+      "checks": [{ "file": "notes.md", "matches": "^# Notes" }]
+    }
+  ]
+}

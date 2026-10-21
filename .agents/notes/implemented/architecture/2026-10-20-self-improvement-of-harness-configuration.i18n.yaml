@@ -1,0 +1,22 @@
+# Bilingual-pair consistency record for 2026-10-20-self-improvement-of-harness-configuration.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-10-20-self-improvement-of-harness-configuration.md
+/agent-note-self-improvement-evolves-harness-configuration-measured-in-fresh-runtimes:
+  en: b940e2e6b3eb08d1
+  zh: bf4d92abd218f150
+/agent-note-self-improvement-evolves-harness-configuration-measured-in-fresh-runtimes/problem:
+  en: b7a5c6f771e3185e
+  zh: e316070b0a209c1a
+/agent-note-self-improvement-evolves-harness-configuration-measured-in-fresh-runtimes/decision:
+  en: c3144e993f8498ed
+  zh: 785fcd2dfe4a5827
+/agent-note-self-improvement-evolves-harness-configuration-measured-in-fresh-runtimes/alternatives-considered:
+  en: 6c96aa8786bff99b
+  zh: 0e7cd3673c1ef464
+/agent-note-self-improvement-evolves-harness-configuration-measured-in-fresh-runtimes/consequences:
+  en: b2124395f9441dcb
+  zh: 9586bf11d45cdd64
+/agent-note-self-improvement-evolves-harness-configuration-measured-in-fresh-runtimes/testing:
+  en: 492607f6fbc89f61
+  zh: ef8058fbd38be332

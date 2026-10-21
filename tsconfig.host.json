@@ -228,6 +228,7 @@
     { "path": "./packages/experimental/terminal-bundle" },
     { "path": "./packages/experimental/badge-skill-bundle" },
     { "path": "./packages/experimental/session-titles-bundle" },
+    { "path": "./packages/experimental/self-improve" },
     { "path": "./packages/experimental/translator" },
     { "path": "./packages/client/product-analytics/tsconfig.host.json" },
     { "path": "./packages/telemetry/otel" },

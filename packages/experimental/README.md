@@ -80,6 +80,7 @@ Promotion requires a named product role, documented public behavior and limitati
 | [`webworker-packer`](webworker-packer/README.md) | Builds the gzip-compressed VFS image consumed by the browser worker preview | library and CLI — no ctx key |
 | [`webworker-runtime`](webworker-runtime/README.md) | Runs the harness plugin tree inside a dedicated browser worker | library and worker entry — no ctx key |
 | [`worktree`](worktree/README.md) | Creates a named Git worktree and changes the calling Session directory | `ctx.worktrees` |
+| [`self-improve`](self-improve/README.md) | `/self-improve`: regularized recursive self-improvement of a harness configuration on a task suite | — |
 
 -----
 

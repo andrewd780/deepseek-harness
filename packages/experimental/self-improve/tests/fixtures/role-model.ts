@@ -2,6 +2,9 @@ import type { Context } from '@deepseek-ai/cordis'
 import { LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 
+/** Every proposer request's user text, oldest first; a test empties it before the run it inspects. */
+export const proposerPrompts: string[] = []
+
 /** Scripted search roles: answers by the role its system text names, and by the proposer's progress. */
 class RoleAdapter extends LlmAdapter {
   override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
@@ -11,6 +14,7 @@ class RoleAdapter extends LlmAdapter {
   async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     const system = options.system ?? ''
     const prompt = options.messages.flatMap(message => message.content.flatMap(block => (block.type === 'text' ? [block.text] : []))).join('\n')
+    if (system.startsWith('You improve')) proposerPrompts.push(prompt)
     const reply = system.startsWith('You analyze')
       ? 'Failure mode: answers without checking the result.'
       : system.startsWith('You improve')

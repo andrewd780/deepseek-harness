@@ -11,6 +11,7 @@ import { lstat, mkdir, readdir, readFile, realpath, writeFile } from 'node:fs/pr
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import { taskMean } from './evaluate.ts'
+import type { CandidateEntry, PruneEntry } from './history.ts'
 import type { CandidateEdit } from './selection.ts'
 import type { AnalysisRequest, Analyst, Proposal, ProposalRequest, Proposer, TextModel } from './types.ts'
 
@@ -21,6 +22,8 @@ export interface ProposerSettings {
   readonly maxTurns: number
   /** Longest file, listing, or trace returned to the model by one action. */
   readonly maxReadCharacters: number
+  /** Longest source diff of one past candidate shown in the edit history and the prune set. */
+  readonly maxHistoryDiffCharacters: number
   /** File extensions `write_file` may create. */
   readonly writableExtensions: readonly string[]
 }
@@ -250,14 +253,28 @@ class ProposerSession {
       `=== Variant ===\nYou draft candidate ${request.variant} of round ${request.round + 1} of ${request.rounds}. ${request.variants} candidate(s) are drafted independently from the same incumbent this round; each is measured on the whole task suite, and the best admissible one becomes the next incumbent.`,
       `=== Edit budget ===\nDeclare at most ${request.budget} edit(s). The budget shrinks over the run: early rounds may bundle coordinated changes, late rounds make single changes whose effect can be attributed.`,
       `=== Exploration ===\n${request.exploration.directive}${request.reserved ? `\nThis candidate holds a reserved exploration slot: at least one edit must change one of ${request.exploration.untried.join(', ')}.` : ''}`,
-      `=== Prune set (components whose recent edits gained nothing, with the accepted machinery you may remove) ===\n${JSON.stringify(request.prune, undefined, 1)}`,
-      `=== Edit history (measured outcomes; a rejected mechanism is evidence against redrawing it unchanged) ===\n${JSON.stringify(request.history, undefined, 1)}`,
+      `=== Prune set (components whose recent edits gained nothing, with the accepted machinery you may remove) ===\n${JSON.stringify(this.pruneView(), undefined, 1)}`,
+      `=== Edit history (measured candidates with their source diffs; a rejected mechanism is evidence against redrawing it unchanged) ===\n${JSON.stringify(this.historyView(), undefined, 1)}`,
       `=== Analysis of the incumbent ===\n${request.analysis}`,
       `=== Incumbent mean reward per task ===\n${perTask}`,
       `=== Evidence trials (read with read_trace) ===\n${request.evidence.map(trace => `${trace.task} (${trace.kind}, reward ${trace.reward})`).join('\n')}`,
       `=== Files ===\n${capped(await this.listFiles(), this.settings.maxReadCharacters)}`,
       ...request.repair === undefined ? [] : [`=== Rejected draft ===\nThe reviewer rejected your previous draft of this candidate. Reasons: ${request.repair.reasons.join('; ')}. Risk notes: ${request.repair.riskNotes.join('; ') || 'none'}. Your declared edits were: ${JSON.stringify(request.repair.declared)}. The files still hold that draft: revise them, then call done again.`],
     ].join('\n\n')
+  }
+
+  /** The prune set with each accepted candidate's diff capped. */
+  private pruneView(): readonly PruneEntry[] {
+    return this.request.prune.map(entry => ({ ...entry, acceptedCandidates: this.capDiffs(entry.acceptedCandidates) }))
+  }
+
+  /** The history with each candidate's diff capped. */
+  private historyView(): readonly CandidateEntry[] {
+    return this.capDiffs(this.request.history)
+  }
+
+  private capDiffs(entries: readonly CandidateEntry[]): readonly CandidateEntry[] {
+    return entries.map(entry => ({ ...entry, diff: capped(entry.diff, this.settings.maxHistoryDiffCharacters) }))
   }
 }
 

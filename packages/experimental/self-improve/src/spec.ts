@@ -68,7 +68,13 @@ export interface RolesSpec {
   readonly proposerTurns: number
   readonly maxReadCharacters: number
   readonly criticAttempts: number
+  /** Longest diff the critic reviews; a longer diff is rejected. */
   readonly maxDiffCharacters: number
+  /**
+   * Longest source diff of one past candidate the proposer's history shows;
+   * defaults to `maxDiffCharacters`, so every measured diff shows whole.
+   */
+  readonly maxHistoryDiffCharacters: number
 }
 
 /** A resolved run spec. */
@@ -164,6 +170,7 @@ export function resolveRunSpec(value: unknown, base: string, problems: string[])
   if (growth !== undefined && !(typeof growth === 'number' && Number.isFinite(growth) && growth >= 0)) {
     problems.push('trial.maxPromptGrowth must be a non-negative number')
   }
+  const maxDiffCharacters = roles.count('maxDiffCharacters', 120_000)
   return {
     name,
     suite: resolve(base, root.text('suite')),
@@ -192,7 +199,8 @@ export function resolveRunSpec(value: unknown, base: string, problems: string[])
       proposerTurns: roles.count('proposerTurns', 40),
       maxReadCharacters: roles.count('maxReadCharacters', 150_000),
       criticAttempts: roles.count('criticAttempts', 3),
-      maxDiffCharacters: roles.count('maxDiffCharacters', 120_000),
+      maxDiffCharacters,
+      maxHistoryDiffCharacters: roles.count('maxHistoryDiffCharacters', maxDiffCharacters),
     },
     settings,
     calibration: calibrationSettings(calibration, delta === 'calibrate', problems),

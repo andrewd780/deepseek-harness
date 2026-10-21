@@ -138,8 +138,18 @@ describe('/self-improve', () => {
       `baseline ${head}: score 0.5000, cost not reported\n`,
     ])
     expect(await job('calibrate run.json')).toEqual({ status: 'completed', result: 'noise band 0.00000 (z 2, bootstrap, scores 0.5000, 0.5000, 0.5000)' })
+    RoleModel.proposerPrompts.splice(0)
     expect(await job('round run.json 1')).toEqual({ status: 'completed', result: 'round 0: accepted A, score 0.5000' })
+    const history = '=== Edit history (measured candidates with their source diffs; a rejected mechanism is evidence against redrawing it unchanged) ===\n'
+    expect(RoleModel.proposerPrompts[0]).toContain(`${history}[]\n\n`)
+    const drafted = RoleModel.proposerPrompts.length
     expect(await job('run run.json')).toEqual({ status: 'completed', result: 'round 1: no admissible candidate, score 0.5000' })
+    const round1 = RoleModel.proposerPrompts[drafted] ?? ''
+    expect(round1).toContain('You draft candidate A of round 2 of 2.')
+    const shown = round1.split(history)[1]?.split('\n\n=== Analysis of the incumbent ===')[0]
+    expect(shown).toMatch(/^\[\n \{\n {2}"round": 0,\n {2}"variant": "A",\n {2}"outcome": "accepted"/)
+    expect(shown).toContain('"component": "skill",\n    "hypothesis": "a checklist catches unverified answers"')
+    expect(shown).toContain('+++ b/harness/evolved/skills/verify/SKILL.md')
     expect(await job('heldout run.json 0')).toEqual({ status: 'completed', result: 'held-out score 1.0000 over 1 task(s)' })
     const directory = new RunDirectory(join(repo, '.agents', 'self-improve', 'loader'))
     const trajectory = await directory.readTrajectory()

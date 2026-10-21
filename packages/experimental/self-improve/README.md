@@ -44,7 +44,7 @@ A run uses four kinds of files in a git repository:
 1. **Evolved directory** — a tracked directory, outside the runs directory, holding any of `overlay.patch.yml` (a profile patch every trial applies before the policy patches), `AGENTS.md` (copied into each trial's Harness home as user-global instructions), and `skills/` (copied there as user skills). The overlay may only set the compaction, tool-result pruning, output spilling, system prompt, and repeated-tool reminder settings that [`DSH_OVERLAY_RULES`](src/evolved-directory.ts) lists, and turn tools off; a measurement whose overlay breaks these rules fails before any trial starts, and each trial loads a JSON copy of the checked entries.
 2. **Policy patches** — frozen profile patches applied after the overlay: the trial's model rows, permissions, sandbox mode, and every row a candidate must not change. Trials run without a person, so the patches must grant the permissions the tasks need.
 3. **Task suite** — a JSON file of tasks, each with a prompt, an optional starting workspace, a split (`evolve` or `heldout`), and checks: an `answer` pattern for the final response, a `file` pattern for a file the trial leaves, or a `command` that must exit 0 in the workspace. A trial's reward is the fraction of its checks that pass. [`src/suite.ts`](src/suite.ts) defines the format.
-4. **Run spec** — a JSON file naming the suite, the evolved directory, the trial route, the operator variables trials receive, the route of the search roles, and `delta`, the noise band, as a number or `"calibrate"`. A spec that calibrates names `calibration.method`: `spread`, the largest difference between the baseline's repeated scores (the paper's definition), or `z`, `calibration.z` (default 2) deviations of the difference of two evaluations (the reference implementation's estimator, twice the spread on two evaluations). Omitted constants take the reference coding instance's values: 20 rounds, 2 candidates per round, 2 trials per task, and an edit budget annealed from 4 to 1. The cost rule allows 25% more tokens per additional passing trial (`selection.costPerPass`), the reference's rate whatever the suite's size; on its 178 trials that is β₁ = 44.5. [`src/spec.ts`](src/spec.ts) defines the format.
+4. **Run spec** — a JSON file naming the suite, the evolved directory, the trial route, the operator variables trials receive, the route of the search roles, and `delta`, the noise band, as a number or `"calibrate"`. A spec that calibrates names `calibration.method`: `spread`, the largest difference between the baseline's repeated scores (the paper's definition), or `z`, `calibration.z` (default 2) deviations of the difference of two evaluations (the reference implementation's estimator, twice the spread on two evaluations). Omitted constants take the reference coding instance's values: 20 rounds, 2 candidates per round, 2 trials per task, and an edit budget annealed from 4 in the first round to 1 in the last. The cost rule allows 25% more tokens per additional passing trial (`selection.costPerPass`), the reference's rate whatever the suite's size; on its 178 trials that is β₁ = 44.5. [`src/spec.ts`](src/spec.ts) defines the format.
 
 ```json
 {
@@ -81,7 +81,7 @@ Accepted candidates move the evolve branch, `self-improve/<name>` unless the spe
 4. Fresh runtimes measure every screened candidate on the evolve tasks; a trial that produces no result scores 0 and counts in the denominator.
 5. A candidate is admissible when its score is at least the best score so far minus the noise band, it passes the domain guards, and it meets the cost rule. A gain above the band may add tokens in proportion to the gain; within the band, only a token saving or a new structural component admits it. The highest admissible score wins.
 
-The edit history, the prune set of components whose recent edits gained nothing, and a stall flag that reserves exploration slots for components the run never changed regularize the proposer's next drafts.
+The edit history, the prune set of components whose recent edits gained nothing, and a stall flag that reserves exploration slots for components the run never changed regularize the proposer's next drafts. The history the proposer sees holds every measured candidate: each edit's component and hypothesis, the candidate's source diff, its score and cost changes, and whether it was accepted; a candidate stopped before measurement stays out of it. The prune set lists each component's accepted candidates with their diffs.
 
 -----
 
@@ -159,7 +159,7 @@ An independent request; only the fixed system text can repeat across rounds.
 
 #### What the model sees
 
-One request per turn, including turns whose answer was not one JSON action. Each sends the system text below and one user message: the candidate's label and round, the edit budget, the exploration directive and any reserved slot, the prune set, the edit history, the analysis, the incumbent's mean reward per task, the evidence trials, the evolved directory's files, a rejected draft's reasons when repairing, and the interaction log of earlier actions and results, ending with `Reply with exactly one JSON action object.` One read returns at most `roles.maxReadCharacters` characters.
+One request per turn, including turns whose answer was not one JSON action. Each sends the system text below and one user message: the candidate's label and round, the edit budget, the exploration directive and any reserved slot, the prune set with each accepted candidate's source diff, the edit history of measured candidates with their source diffs, the analysis, the incumbent's mean reward per task, the evidence trials, the evolved directory's files, a rejected draft's reasons when repairing, and the interaction log of earlier actions and results, ending with `Reply with exactly one JSON action object.` One read returns at most `roles.maxReadCharacters` characters. Each source diff shows at most `roles.maxHistoryDiffCharacters` characters, by default `roles.maxDiffCharacters`, the longest diff the critic reviews, so every measured candidate's diff shows whole.
 
 ##### Proposer system text
 
@@ -191,7 +191,7 @@ Never encode task names, task-specific values, or expected answers: the harness 
 
 #### Token effect
 
-Up to `roles.proposerTurns` requests per draft, each repeating the context and the growing interaction log; each critic rejection starts a repair draft with the same limit.
+Up to `roles.proposerTurns` requests per draft, each repeating the context and the growing interaction log; each critic rejection starts a repair draft with the same limit. The context grows over a run: the history repeats up to `historyLimit` edit records with their candidates' source diffs, and the prune set repeats its accepted candidates' diffs, each diff up to `roles.maxHistoryDiffCharacters` characters; lower both for a small context window.
 
 #### KV Cache effect
 
@@ -214,7 +214,7 @@ Reject the change when any of these holds:
 
 1. Task fitting: the change encodes knowledge of particular tasks in the suite, such as task names or ids, entity names, file names a task uses, expected outputs or answers, constants that only make sense for one task, or branches on features that identify a task. General working practice is acceptable. Ask whether the change would still make sense, and still help, on an unfamiliar task of the same kind from a different suite.
 
-2. No effect or lost safety: the change has no effect while claiming a mechanism (dead code, an unused setting, comments only), or it removes or disables an existing safety mechanism (context compaction, output limits, error handling, termination guards) without a working replacement.
+2. Inert machinery: the change adds machinery that has no effect while claiming a mechanism, such as dead code, an unused setting, or comments only.
 
 3. Grader gaming: the change reads, detects, reconstructs, or influences the grader at run time, encodes a threshold or reference value that could only come from a grader, or shapes the final output for the grader rather than for the task.
 
@@ -222,9 +222,7 @@ Reject the change when any of these holds:
 
 5. Run-time memorization: a memory, state, or skill mechanism persists or injects task-specific run-time data across trials, such as captured file contents, tool output, computed answers, task or entity names, or solutions keyed by task. Persisting general procedures without task entities is acceptable.
 
-6. Unbounded work: an added check, retry, or improvement loop has no exit, or finishing waits for a confirmation that may never arrive. A bounded pass with an explicit exit is acceptable.
-
-Otherwise accept. Judge intent and content, not style. Do not judge run-time correctness: you see only the diff, and later checks run the changed harness.
+Otherwise accept. The review targets suite-specific content, not particular harness components: a generic improvement to a prompt or a tool description is a valid change. Judge intent and content, not style. Do not judge run-time correctness: you see only the diff, and later checks run the changed harness.
 
 Reply with one JSON object and nothing else: {"verdict": "accept" or "reject", "reasons": ["..."], "riskNotes": ["..."]}
 ```
@@ -272,6 +270,6 @@ Every trial is an independent runtime; nothing carries between trials or into th
 <details>
 <summary>Working context for maintainers — click to expand</summary>
 
-The selection rules, edit budget, history summaries, exploration, critic screen, and missing-trial accounting follow the reference implementation's rules, with original prompt text. The cosine budget reaches its minimum only at `round = rounds`, so the last round of a run can still bundle two edits, as in the reference.
+The selection rules, history summaries, exploration, and missing-trial accounting follow the reference implementation's rules, with original prompt text. Where the paper's text and the reference differ, the package follows the text: the proposer's history carries each measured candidate's source diff and leaves out candidates stopped before measurement (Eq. 10), the prune set carries the accepted candidates' diffs (D.2), the edit budget's cosine runs to the last round so that round gets the minimum (Eq. 4 as printed, with t/T over rounds 0 to T − 1, ends one above it), and the critic rejects only the paper's grounds: suite-specific content, including grader gaming and run-time memorization, inert machinery, and changes the declared edits do not cover.
 
 </details>

@@ -10,11 +10,13 @@ Status: implemented
 
 ## 决策
 
-`@deepseek-ai/dsh-experimental-self-improve` 用 TypeScript 重新实现参考实现的循环，演化一个 dsh 配置目录：profile overlay、用户全局 `AGENTS.md` 和 skills，由操作者的仓库跟踪。每个候选是一个拥有独立 git 检出目录的分支；被接受的候选快进 evolve 分支，从不改变操作者的工作树或在用配置。一次试验在通过 SDK client 启动的全新 `dsh` 运行时中执行一个任务：候选的 overlay 先于冻结的策略补丁应用，工作区、Harness home 和 agents home 都是全新的，且位于任何仓库之外；任务的检查为其打分，其成本是该运行时中每个 Session 的精确轮次用量。每次试验都把 overlay 作为配置加载，而配置可能加载插件、启动进程或放宽沙箱，因此候选的 overlay 只能设置一份固定列表中的调优设置并关闭工具；插件在审查之前检查它，试验加载已检查条目的 JSON 副本。analyst、proposer 和 critic 在任何 Session 之外调用 `ctx.llm`，运行目录保存每份草稿的模型交互和每个判定。运行只能通过 `/self-improve` 命令启动，作为由调用 agent 拥有的后台任务。[包 README](../../../../packages/experimental/self-improve/README.zh.md) 负责操作规则。
+`@deepseek-ai/dsh-experimental-self-improve` 用 TypeScript 重新实现参考实现的循环，两者不一致时遵循论文正文，并演化一个 dsh 配置目录：profile overlay、用户全局 `AGENTS.md` 和 skills，由操作者的仓库跟踪。每个候选是一个拥有独立 git 检出目录的分支；被接受的候选快进 evolve 分支，从不改变操作者的工作树或在用配置。一次试验在通过 SDK client 启动的全新 `dsh` 运行时中执行一个任务：候选的 overlay 先于冻结的策略补丁应用，工作区、Harness home 和 agents home 都是全新的，且位于任何仓库之外；任务的检查为其打分，其成本是该运行时中每个 Session 的精确轮次用量。每次试验都把 overlay 作为配置加载，而配置可能加载插件、启动进程或放宽沙箱，因此候选的 overlay 只能设置一份固定列表中的调优设置并关闭工具；插件在审查之前检查它，试验加载已检查条目的 JSON 副本。analyst、proposer 和 critic 在任何 Session 之外调用 `ctx.llm`，运行目录保存每份草稿的模型交互和每个判定。运行只能通过 `/self-improve` 命令启动，作为由调用 agent 拥有的后台任务。[包 README](../../../../packages/experimental/self-improve/README.zh.md) 负责操作规则。
 
 ## 考虑过的替代方案
 
 **为参考实现编写 dsh 适配器并直接运行。** 作为实现方案被拒绝：它保留单一服务商的搜索角色、基准容器以及位于本仓库之外的演化副本，被接受的 diff 仍需移植。适配器仍是复现论文 Terminal-Bench 度量结果的途径。
+
+**论文正文与参考实现不一致时遵循参考实现。** 被拒绝：论文规定了方法，参考实现只是它的一种实现。参考实现不向 proposer 展示源 diff，而论文的 proposer 以这些 diff 为条件；它的编辑预算结束时高于论文所说的最后一轮预算；它的 critic 还会按论文没有列出的理由拒绝修改。[包 README](../../../../packages/experimental/self-improve/README.zh.md#dev-note) 逐项列出了这些差异。
 
 **演化 TypeScript 源码。** 暂时拒绝：每个候选在度量前都需要一次构建和全部门禁，估计每个需要 15 到 40 分钟，而被接受的修改仍承担全部包义务。配置修改以操作者自行应用的 overlay 形式交付。
 

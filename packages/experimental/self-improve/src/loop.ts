@@ -37,7 +37,7 @@ import type { CandidateRecord, GatedCandidate, ReadyCandidate, Revision, RunDire
 import type { EvaluationResult } from './evaluate.ts'
 import { renderEvidence, selectTraces } from './evidence.ts'
 import { exploration, stallFlag } from './history.ts'
-import type { EditRecord, ExplorationDirective, GateOutcome, PruneEntry } from './history.ts'
+import type { CandidateEntry, ExplorationDirective, GateOutcome, PruneEntry } from './history.ts'
 import { editBudget } from './schedule.ts'
 import { resolveSelectionPolicy, selectRound } from './selection.ts'
 import type { Candidate, CandidateEdit, Decision, SelectionSettings } from './selection.ts'
@@ -62,7 +62,7 @@ export interface RunSettings {
   readonly variants: number
   /** k: trials per task. */
   readonly trials: number
-  /** The edit budget at the end of the run. */
+  /** The edit budget of the last round. */
   readonly minEdits: number
   /** The edit budget of round 0. */
   readonly maxEdits: number
@@ -80,7 +80,7 @@ export interface RunSettings {
   readonly successTraces: number
   /** Fraction of trials that may produce no result before an evaluation is invalid. */
   readonly maxMissingFraction: number
-  /** History records the proposer sees. */
+  /** Most edit records of measured candidates the proposer sees; the newest are kept. */
   readonly historyLimit: number
   /** δ; `undefined` reads the run's calibration. */
   readonly delta: number | undefined
@@ -125,7 +125,7 @@ interface DraftContext {
   readonly budget: number
   readonly exploration: ExplorationDirective
   readonly prune: readonly PruneEntry[]
-  readonly history: readonly EditRecord[]
+  readonly history: readonly CandidateEntry[]
   readonly analysis: string
   readonly evidence: readonly RenderedTrace[]
   readonly incumbent: EvaluationResult
@@ -314,7 +314,8 @@ export class SelfImproveRun {
     for (const { candidate, decision } of judged) {
       if (history.has(round, candidate.variant)) continue
       const outcome = candidate.gate ?? (candidate === winner ? 'accepted' : decision.admissible ? 'lost' : 'rejected')
-      history.appendCandidate(round, candidate.variant, candidate.edits, outcome, decision)
+      const diff = await directory.readRoundText(round, join(candidate.variant, 'diff.patch')) ?? ''
+      history.appendCandidate(round, candidate.variant, candidate.edits, diff, outcome, decision)
       log(`r${round}${candidate.variant}: ${outcome}: ${decision.reason}`)
     }
     await directory.writeHistory(history)

@@ -54,6 +54,8 @@ describe('critic prompts', () => {
     const system = criticSystemPrompt('Tasks are coding tasks.')
     expect(system).toContain('Tasks are coding tasks.')
     expect(system).toContain('Reply with one JSON object and nothing else')
+    expect(system.match(/^\d\. [A-Z][a-z-]+(?: [a-z-]+)?:/gm)).toEqual(['1. Task fitting:', '2. Inert machinery:', '3. Grader gaming:', '4. Undeclared changes:', '5. Run-time memorization:'])
+    expect(system).toContain('The review targets suite-specific content, not particular harness components')
     expect(criticSystemPrompt('')).not.toContain('\n\n\n\n')
     const prompt = criticPrompt(request)
     expect(prompt).toContain('Summary: plan first')

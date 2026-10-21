@@ -9,7 +9,7 @@
 import type { EvaluationJobId, TaskId } from './brand.ts'
 import type { ComponentSet } from './components.ts'
 import type { EvaluationResult } from './evaluate.ts'
-import type { EditRecord, ExplorationDirective, PruneEntry } from './history.ts'
+import type { CandidateEntry, ExplorationDirective, PruneEntry } from './history.ts'
 import type { CandidateEdit } from './selection.ts'
 
 /** One request to a model playing a search role. */
@@ -231,8 +231,10 @@ export interface ProposalRequest {
   readonly exploration: ExplorationDirective
   /** Whether this variant holds a slot reserved for untried components. */
   readonly reserved: boolean
+  /** B_t: components whose recent edits gained nothing, each with its accepted edits and their source diffs. */
   readonly prune: readonly PruneEntry[]
-  readonly history: readonly EditRecord[]
+  /** L_t: measured candidates, oldest first, each with its edits, measurement, and source diff. */
+  readonly history: readonly CandidateEntry[]
   readonly analysis: string
   readonly evidence: readonly RenderedTrace[]
   readonly incumbent: EvaluationResult

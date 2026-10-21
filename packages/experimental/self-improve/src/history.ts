@@ -2,11 +2,13 @@
  * The edit history of a self-improvement run and the summaries the proposer
  * and the selection rules read from it.
  *
- * One record per edit. A candidate that bundles several edits gets one
+ * One record per edit, tagged with its component, its hypothesis, and its
+ * candidate's source diff. A candidate that bundles several edits gets one
  * measurement, and every edit in the bundle carries it; as the edit budget
  * anneals to 1 a record becomes evidence about a single component. A
  * candidate dropped before measurement (critic rejection, failed smoke check)
- * is recorded without a score change and never counts as tried.
+ * is recorded without a score change, never counts as tried, and stays out
+ * of the history the proposer sees, which is the paper's L_t (Eq. 10).
  *
  * @module @deepseek-ai/dsh-experimental-self-improve/history
  */
@@ -38,17 +40,36 @@ export interface EditRecord {
   readonly bundle: number
   /** The decision's or the gate's reason, at most 600 characters. */
   readonly detail: string
+  /**
+   * The candidate's unified diff of the evolved directory, shared by every
+   * edit of the candidate; empty when its draft failed before any diff.
+   */
+  readonly diff: string
 }
 
 /** A record whose candidate was measured. */
 export type MeasuredRecord = EditRecord & { readonly scoreChange: number }
+
+/** One measured candidate as the proposer reads it: its edits share the candidate's measurement and source diff. */
+export interface CandidateEntry {
+  readonly round: number
+  readonly variant: string
+  readonly outcome: MeasuredOutcome | GateOutcome
+  readonly accepted: boolean
+  readonly scoreChange: number
+  readonly costChange?: number
+  readonly detail: string
+  readonly edits: readonly CandidateEdit[]
+  readonly diff: string
+}
 
 /** A component whose recent edits gained nothing, with the machinery the incumbent carries for it. */
 export interface PruneEntry {
   readonly component: string
   /** Best recent ΔS, or `undefined` when the component has no recent measured edit. */
   readonly recentBestGain: number | undefined
-  readonly acceptedEdits: readonly { readonly round: number; readonly editId: string; readonly hypothesis: string }[]
+  /** The accepted candidates that changed the component, oldest first, each listing its edits on the component. */
+  readonly acceptedCandidates: readonly CandidateEntry[]
 }
 
 /** Whether the run has stalled, which components it never exercised, and the directive the proposer receives. */
@@ -62,9 +83,6 @@ export interface ExplorationDirective {
 
 const MEASURED_OUTCOMES: ReadonlySet<string> = new Set(['accepted', 'rejected', 'lost'])
 const GATE_OUTCOMES: ReadonlySet<string> = new Set(['draft-failed', 'critic-rejected', 'smoke-failed', 'evaluation-invalid'])
-
-/** Unmeasured records kept in a rendered view: a wall of gate failures is a feedback loop, not evidence. */
-const RENDERED_UNMEASURED = 4
 
 /** The edit history of one run. */
 export class EditHistory {
@@ -91,6 +109,7 @@ export class EditHistory {
    * @param round - the round the candidate was drafted in.
    * @param variant - the candidate's label within the round.
    * @param edits - the candidate's edits; a candidate whose draft produced none is recorded as one placeholder edit.
+   * @param diff - the candidate's source diff; empty when its draft failed before any diff.
    * @param outcome - the gate failure, or the measured outcome.
    * @param decision - the selection decision of a measured candidate.
    * @returns the appended records.
@@ -99,6 +118,7 @@ export class EditHistory {
     round: number,
     variant: string,
     edits: readonly CandidateEdit[],
+    diff: string,
     outcome: MeasuredOutcome | GateOutcome,
     decision?: Decision,
   ): readonly EditRecord[] {
@@ -118,6 +138,7 @@ export class EditHistory {
       ...measured === undefined ? {} : { scoreChange: measured.scoreChange, costChange: measured.costChange },
       bundle,
       detail: (decision?.reason ?? '').slice(0, 600),
+      diff,
     }))
     this.entries.push(...appended)
     return appended
@@ -176,7 +197,8 @@ export class EditHistory {
 
   /**
    * Tried components whose recent best gain is not positive, with the
-   * accepted machinery the proposer may remove.
+   * accepted machinery the proposer may remove: every accepted edit on the
+   * component, with its candidate's source diff.
    * @param round - the current round.
    * @param window - how many rounds back count as recent.
    * @returns the prune set, ordered by component name.
@@ -189,31 +211,22 @@ export class EditHistory {
       return [{
         component,
         recentBestGain: gain === Number.NEGATIVE_INFINITY ? undefined : gain,
-        acceptedEdits: this.entries
-          .filter(record => record.accepted && record.component === component)
-          .map(record => ({ round: record.round, editId: record.editId, hypothesis: record.hypothesis })),
+        acceptedCandidates: byCandidate(this.entries.filter((record): record is MeasuredRecord =>
+          record.accepted && record.scoreChange !== undefined && record.component === component)),
       }]
     })
   }
 
   /**
-   * The most recent records for the proposer's context. Measured records
-   * dominate: only the latest few unmeasured records are kept.
-   * @param limit - most records returned.
-   * @returns the records, oldest first.
+   * The history the proposer conditions on: the latest records of measured
+   * candidates, grouped by candidate, each with its source diff. Candidates
+   * that failed before a valid measurement are left out, as in the paper's
+   * L_t (Eq. 10).
+   * @param limit - most records returned; the oldest candidate kept may show only its later edits.
+   * @returns one entry per candidate, oldest first.
    */
-  render(limit = 40): readonly EditRecord[] {
-    const kept: EditRecord[] = []
-    let unmeasured = 0
-    for (const record of [...this.entries].reverse()) {
-      if (kept.length >= limit) break
-      if (record.scoreChange === undefined) {
-        unmeasured += 1
-        if (unmeasured > RENDERED_UNMEASURED) continue
-      }
-      kept.push(record)
-    }
-    return kept.reverse()
+  render(limit = 40): readonly CandidateEntry[] {
+    return byCandidate(this.entries.filter((record): record is MeasuredRecord => record.scoreChange !== undefined).slice(-limit))
   }
 
   /** Measured records within `window` rounds of `round`. */
@@ -247,6 +260,31 @@ export class EditHistory {
   }
 }
 
+/** Group measured records, in order, into one entry per candidate; a candidate's records are contiguous. */
+function byCandidate(records: readonly MeasuredRecord[]): readonly CandidateEntry[] {
+  const entries: (CandidateEntry & { readonly edits: CandidateEdit[] })[] = []
+  for (const record of records) {
+    const edit = { id: record.editId, component: record.component, hypothesis: record.hypothesis }
+    const last = entries.at(-1)
+    if (last?.round === record.round && last.variant === record.variant) {
+      last.edits.push(edit)
+      continue
+    }
+    entries.push({
+      round: record.round,
+      variant: record.variant,
+      outcome: record.outcome,
+      accepted: record.accepted,
+      scoreChange: record.scoreChange,
+      ...record.costChange === undefined ? {} : { costChange: record.costChange },
+      detail: record.detail,
+      edits: [edit],
+      diff: record.diff,
+    })
+  }
+  return entries
+}
+
 /** The best score change among a component's records; `-Infinity` when it has none. */
 function bestGain(component: string, records: readonly MeasuredRecord[]): number {
   return Math.max(Number.NEGATIVE_INFINITY, ...records.filter(record => record.component === component).map(record => record.scoreChange))
@@ -268,6 +306,7 @@ function isEditRecord(value: unknown): value is EditRecord {
     && (record['costChange'] === undefined || typeof record['costChange'] === 'number')
     && Number.isInteger(record['bundle'])
     && typeof record['detail'] === 'string'
+    && typeof record['diff'] === 'string'
 }
 
 /**

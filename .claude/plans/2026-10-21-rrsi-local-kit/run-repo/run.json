@@ -19,9 +19,14 @@
     "maxOutputTokens": 4096,
     "maxReadCharacters": 20000,
     "maxDiffCharacters": 20000,
+    "maxHistoryDiffCharacters": 4000,
     "proposerTurns": 12
   },
-  "delta": 0.3,
+  "delta": "calibrate",
+  "calibration": {
+    "method": "spread"
+  },
+  "historyLimit": 8,
   "rounds": 1,
   "variants": 1,
   "trials": 1,

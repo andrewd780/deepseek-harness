@@ -264,6 +264,7 @@ export async function openRun(
       model,
       maxTurns: spec.roles.proposerTurns,
       maxReadCharacters: spec.roles.maxReadCharacters,
+      maxHistoryDiffCharacters: spec.roles.maxHistoryDiffCharacters,
       writableExtensions: EVOLVED_FILE_EXTENSIONS,
     }),
     critic: createCritic({

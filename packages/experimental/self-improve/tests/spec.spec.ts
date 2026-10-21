@@ -37,7 +37,9 @@ describe('resolveRunSpec', () => {
       branch: 'self-improve/small-window',
       startPoint: 'HEAD',
       trial: { profile: 'sdk', policyPatches: ['/specs/policy.patch.yml'], forwardEnv: [], env: {}, timeoutMs: 1_800_000, concurrency: 1, maxPromptGrowth: undefined },
-      roles: { maxOutputTokens: 16_384, proposerTurns: 40, criticAttempts: 3, maxDiffCharacters: 120_000 },
+      roles: {
+        maxOutputTokens: 16_384, proposerTurns: 40, criticAttempts: 3, maxDiffCharacters: 120_000, maxHistoryDiffCharacters: 120_000,
+      },
       calibration: { method: 'z', z: 2, resamples: 2_000, seed: 7 },
     })
     expect(spec.settings).toMatchObject({
@@ -51,6 +53,15 @@ describe('resolveRunSpec', () => {
         noveltyWeight: 0.5,
       },
     })
+  })
+
+  it('caps history diffs at the critic\'s diff limit unless the spec sets them', () => {
+    expect(resolved({ ...minimal, roles: { ...minimal.roles, maxDiffCharacters: 5_000 } }).spec.roles)
+      .toMatchObject({ maxDiffCharacters: 5_000, maxHistoryDiffCharacters: 5_000 })
+    expect(resolved({ ...minimal, roles: { ...minimal.roles, maxHistoryDiffCharacters: 800 } }).spec.roles)
+      .toMatchObject({ maxDiffCharacters: 120_000, maxHistoryDiffCharacters: 800 })
+    expect(resolved({ ...minimal, roles: { ...minimal.roles, maxHistoryDiffCharacters: 0 } }).problems)
+      .toEqual(['roles.maxHistoryDiffCharacters must be an integer from 1 to 9007199254740991'])
   })
 
   it('takes each rate per unit of score or per passing trial, never both', () => {

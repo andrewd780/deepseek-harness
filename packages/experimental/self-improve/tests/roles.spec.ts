@@ -55,7 +55,7 @@ function request(path: string, overrides: Partial<ProposalRequest> = {}): Propos
   }
 }
 
-const settings = (model: TextModel, maxTurns = 20) => ({ model, maxTurns, maxReadCharacters: 400, writableExtensions: ['.md'] })
+const settings = (model: TextModel, maxTurns = 20) => ({ model, maxTurns, maxReadCharacters: 400, maxHistoryDiffCharacters: 30, writableExtensions: ['.md'] })
 
 describe('createAnalyst', () => {
   it('sends the evidence and the previous report', async () => {
@@ -99,6 +99,28 @@ describe('createProposer', () => {
     expect(first?.prompt).toContain('a (failure, reward 0)')
     expect(first?.prompt).not.toContain('reserved exploration slot')
     expect(first?.prompt).not.toContain('=== Rejected draft ===')
+  })
+
+  it('shows the measured history and the prune set with each source diff capped', async () => {
+    const path = await evolvedDirectory()
+    const model = scripted()
+    const long = `+++ b/AGENTS.md\n+${'p'.repeat(60)}`
+    const accepted = {
+      round: 0, variant: 'A', outcome: 'accepted' as const, accepted: true, scoreChange: 0.25, costChange: 0.1, detail: 'admissible',
+      edits: [{ id: 'E1', component: 'prompt', hypothesis: 'plan first' }], diff: long,
+    }
+    const lost = {
+      round: 0, variant: 'B', outcome: 'lost' as const, accepted: false, scoreChange: 0.1, detail: 'lower score',
+      edits: [{ id: 'E1', component: 'skill', hypothesis: 'a review skill' }], diff: '+++ b/skills/r/SKILL.md',
+    }
+    const capped = `${long.slice(0, 30)}\n...[${long.length - 30} more characters]`
+    expect(await createProposer(settings(model, 1)).propose(request(path, {
+      history: [accepted, lost],
+      prune: [{ component: 'prompt', recentBestGain: 0, acceptedCandidates: [accepted] }],
+    }))).toMatchObject({ status: 'failed' })
+    const prompt = model.requests[0]?.prompt
+    expect(prompt).toContain(`=== Edit history (measured candidates with their source diffs; a rejected mechanism is evidence against redrawing it unchanged) ===\n${JSON.stringify([{ ...accepted, diff: capped }, lost], undefined, 1)}\n\n`)
+    expect(prompt).toContain(`=== Prune set (components whose recent edits gained nothing, with the accepted machinery you may remove) ===\n${JSON.stringify([{ component: 'prompt', recentBestGain: 0, acceptedCandidates: [{ ...accepted, diff: capped }] }], undefined, 1)}\n\n`)
   })
 
   it('answers invalid actions with errors and keeps every write inside the evolved directory', async () => {

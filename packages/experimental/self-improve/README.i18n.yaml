@@ -21,14 +21,14 @@
   en: a37a63a9f8ad8905
   zh: 7b05f54f21318fae
 /deepseek-ai-dsh-experimental-self-improve/use-this-package/prepare-a-run:
-  en: d32cfe0db257e6d8
-  zh: 09adb489ada401a2
+  en: 7a7d8a0b6f04988d
+  zh: ec624a26c8d8bf90
 /deepseek-ai-dsh-experimental-self-improve/use-this-package/run-it:
   en: 9c752d1c03956fe8
   zh: 4bad3065070c451d
 /deepseek-ai-dsh-experimental-self-improve/use-this-package/what-a-round-does:
-  en: e828622da586ae03
-  zh: 681243abc6f3ecce
+  en: 55dfd2b2c6a31487
+  zh: e1f42dd580c1dbae
 /deepseek-ai-dsh-experimental-self-improve/understand-the-implementation:
   en: a32113a73243052c
   zh: b0c7f9c03affe8fb
@@ -57,8 +57,8 @@
   en: edf8ef6254a70758
   zh: 327022aca86478b4
 /deepseek-ai-dsh-experimental-self-improve/model-experience/proposer-requests/what-the-model-sees:
-  en: d08ef0825f112c7e
-  zh: 629aec911fe62496
+  en: 50e4ebc101d31009
+  zh: f87101564bb57a3e
 /deepseek-ai-dsh-experimental-self-improve/model-experience/proposer-requests/what-the-model-sees/proposer-system-text:
   en: 96623cee010084ca
   zh: 1420ce31589dffab
@@ -66,8 +66,8 @@
   en: 0720f032e70c7741
   zh: 4d71b172d8388963
 /deepseek-ai-dsh-experimental-self-improve/model-experience/proposer-requests/token-effect:
-  en: 502e37926b5f1f13
-  zh: 47bb02d26686734a
+  en: 7e876c806787d055
+  zh: 4432eba4b20f6921
 /deepseek-ai-dsh-experimental-self-improve/model-experience/proposer-requests/kv-cache-effect:
   en: 1fb120aed5a1139a
   zh: 07dcaa54640a5cbe
@@ -102,5 +102,5 @@
   en: 4647249eb3b7fe33
   zh: 5ab5a267f8f78a26
 /deepseek-ai-dsh-experimental-self-improve/known-limitations-and-deferred-work/dev-note:
-  en: ea970cf989d6cbda
-  zh: 7b062ad2bcf6a0eb
+  en: 87e124a19282e348
+  zh: b626d2a0d886064d

@@ -46,7 +46,7 @@ describe('RunDirectory', () => {
     await run.writeTrajectory(trajectory)
     expect(await run.readTrajectory()).toEqual(trajectory)
     const history = new EditHistory(componentSet)
-    history.appendCandidate(0, 'A', [{ id: 'C1', component: 'prompt', hypothesis: 'h' }], 'smoke-failed')
+    history.appendCandidate(0, 'A', [{ id: 'C1', component: 'prompt', hypothesis: 'h' }], '+++ b/AGENTS.md\n+say "done"', 'smoke-failed')
     await run.writeHistory(history)
     expect((await run.readHistory(componentSet)).records()).toEqual(history.records())
     const calibration = { method: 'z' as const, delta: 0.02, z: 2, deviation: 0.01, estimate: 'bootstrap' as const, bootstrapDeviation: 0.01, scores: [0.5] }

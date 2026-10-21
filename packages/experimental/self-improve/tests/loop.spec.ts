@@ -106,7 +106,8 @@ describe('SelfImproveRun rounds', () => {
     expect(outcome.incumbent).toMatchObject({ job: 'r0A', score: 0.75, cost: 100, variant: 'A' })
     expect(store.tipCommit).toBe(outcome.incumbent.commit)
     expect(outcome.decisions.map(decision => decision.admissible)).toEqual([true, true])
-    expect((await directory.readHistory(componentSet)).records().map(record => [record.variant, record.outcome])).toEqual([['A', 'accepted'], ['B', 'lost']])
+    expect((await directory.readHistory(componentSet)).records().map(record => [record.variant, record.outcome, record.diff]))
+      .toEqual([['A', 'accepted', '+++ b/AGENTS.md\n+r0A'], ['B', 'lost', '+++ b/AGENTS.md\n+r0B']])
     expect(analyst.requests.map(request => [request.round, request.previous, request.evidence.length])).toEqual([[0, '', 2]])
     expect(proposer.requests.map(request => [request.variant, request.budget, request.reserved, request.analysis])).toEqual([['A', 2, false, 'report 0'], ['B', 2, false, 'report 0']])
     expect(critic.requests).toHaveLength(2)
@@ -148,6 +149,9 @@ describe('SelfImproveRun rounds', () => {
     proposer.script.set('r1B', [{ edits: [edit('prompt')] }, { diff: '+++ b/skills/review/SKILL.md', edits: [edit('skill', 'C2')] }])
     const second = await run.round()
     expect(second.winner).toBeUndefined()
+    const firstOfRound1 = proposer.requests.find(request => request.round === 1)
+    expect(firstOfRound1?.history.map(entry => [entry.round, entry.variant, entry.outcome, entry.diff]))
+      .toEqual([[0, 'A', 'rejected', '+++ b/AGENTS.md\n+r0A'], [0, 'B', 'rejected', '+++ b/AGENTS.md\n+r0B']])
     const reserved = proposer.requests.filter(request => request.checkout.name === 'r1B')
     expect(reserved.map(request => request.reserved)).toEqual([true, true])
     expect(reserved[1]?.repair?.reasons[0]).toMatch(/^this candidate holds a slot reserved for components the run never changed/)
@@ -190,6 +194,8 @@ describe('SelfImproveRun rounds', () => {
     expect(history.filter(record => record.round === 2).map(record => [record.variant, record.outcome, record.detail]))
       .toEqual([['A', 'critic-rejected', 'critic-rejected: the candidate declares no edit'], ['B', 'evaluation-invalid', 'evaluation-invalid: 2/4 trials produced no result after one retry']])
     expect(domain.evaluations.filter(request => request.job === 'r2B')).toHaveLength(2)
+    expect(history.filter(record => record.round === 0).map(record => [record.variant, record.diff])).toEqual([['A', ''], ['B', '+++ b/AGENTS.md\n+r0B']])
+    expect(proposer.requests.flatMap(request => request.history)).toEqual([])
   })
 
   it('raises the domain\'s objections before the critic and lets the proposer repair them', async () => {

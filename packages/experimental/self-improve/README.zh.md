@@ -44,7 +44,7 @@ kind: "package-reference"
 1. **演化目录** — 一个受跟踪、位于运行目录之外的目录，可包含 `overlay.patch.yml`（每次试验在策略补丁之前应用的 profile 补丁）、`AGENTS.md`（复制到每次试验的 Harness home，作为用户全局指令）和 `skills/`（复制到同一位置作为用户 skills）。overlay 只能设置 [`DSH_OVERLAY_RULES`](src/evolved-directory.ts) 列出的压缩、工具结果修剪、输出溢出、系统提示词和重复工具提醒设置，以及关闭工具；overlay 违反这些规则的度量会在任何试验启动之前失败，每次试验加载的是已检查条目的 JSON 副本。
 2. **策略补丁** — 在 overlay 之后应用的冻结 profile 补丁：试验的模型配置行、权限、沙箱模式，以及候选不得修改的每一行。试验在无人值守下运行，因此补丁必须授予任务所需的权限。
 3. **任务集** — 一个 JSON 任务文件，每个任务包含提示词、可选的起始工作区、划分（`evolve` 或 `heldout`）和检查：对最终回复的 `answer` 模式、对试验留下的文件的 `file` 模式，或必须在工作区中以 0 退出的 `command`。试验的奖励是其通过的检查所占比例。格式由 [`src/suite.ts`](src/suite.ts) 定义。
-4. **运行 spec** — 一个 JSON 文件，指明任务集、演化目录、试验路由、试验接收的操作者环境变量、搜索角色的路由，以及噪声带 `delta`：一个数值或 `"calibrate"`。需要校准的 spec 须指明 `calibration.method`：`spread` 取 baseline 重复度量分数之间的最大差值（论文的定义），`z` 取两次度量之差的 `calibration.z`（默认 2）个偏差（参考实现的估计量，在两次度量上等于差值的两倍）。省略的常量取参考编码实例的值：20 轮、每轮 2 个候选、每个任务 2 次试验，编辑预算从 4 退火到 1。成本规则对每多通过一次试验允许增加 25% 的 token（`selection.costPerPass`），无论任务集大小都沿用参考实现的这一比率；在参考实现的 178 次试验上即 β₁ = 44.5。格式由 [`src/spec.ts`](src/spec.ts) 定义。
+4. **运行 spec** — 一个 JSON 文件，指明任务集、演化目录、试验路由、试验接收的操作者环境变量、搜索角色的路由，以及噪声带 `delta`：一个数值或 `"calibrate"`。需要校准的 spec 须指明 `calibration.method`：`spread` 取 baseline 重复度量分数之间的最大差值（论文的定义），`z` 取两次度量之差的 `calibration.z`（默认 2）个偏差（参考实现的估计量，在两次度量上等于差值的两倍）。省略的常量取参考编码实例的值：20 轮、每轮 2 个候选、每个任务 2 次试验，编辑预算从第一轮的 4 退火到最后一轮的 1。成本规则对每多通过一次试验允许增加 25% 的 token（`selection.costPerPass`），无论任务集大小都沿用参考实现的这一比率；在参考实现的 178 次试验上即 β₁ = 44.5。格式由 [`src/spec.ts`](src/spec.ts) 定义。
 
 ```json
 {
@@ -81,7 +81,7 @@ kind: "package-reference"
 4. 全新运行时在 evolve 任务上度量每个通过筛查的候选；没有产出结果的试验记为 0 分并计入分母。
 5. 当候选分数不低于迄今最佳分数减去噪声带、通过领域守卫并满足成本规则时，它才是可接受的。高于噪声带的增益可按增益比例增加 token；在噪声带内，只有节省 token 或新增结构性组件才能使其被接受。可接受候选中分数最高者胜出。
 
-编辑历史、剪枝集（近期修改没有带来增益的组件），以及在停滞时为本次运行从未修改过的组件保留探索名额的停滞标志，会正则化 proposer 之后的草稿。
+编辑历史、剪枝集（近期修改没有带来增益的组件），以及在停滞时为本次运行从未修改过的组件保留探索名额的停滞标志，会正则化 proposer 之后的草稿。proposer 看到的历史包含每个已度量的候选：每项修改的组件和假设、候选的源 diff、分数与成本变化，以及是否被接受；在度量前即被拦下的候选不进入历史。剪枝集列出每个组件被接受的候选及其 diff。
 
 -----
 
@@ -159,7 +159,7 @@ Name general mechanisms, never task-specific answers. When a previous report is 
 
 #### 模型看到什么
 
-每回合一个请求，包括回答不是单个 JSON 动作的回合。每个请求发送下方的系统文本和一条用户消息：候选的标签与轮次、编辑预算、探索指令及任何保留名额、剪枝集、编辑历史、分析报告、incumbent 各任务的平均奖励、证据试验、演化目录中的文件、修复时被拒草稿的原因，以及之前动作和结果的交互日志，并以 `Reply with exactly one JSON action object.` 结尾。一次读取最多返回 `roles.maxReadCharacters` 个字符。
+每回合一个请求，包括回答不是单个 JSON 动作的回合。每个请求发送下方的系统文本和一条用户消息：候选的标签与轮次、编辑预算、探索指令及任何保留名额、附带每个被接受候选源 diff 的剪枝集、附带源 diff 的已度量候选编辑历史、分析报告、incumbent 各任务的平均奖励、证据试验、演化目录中的文件、修复时被拒草稿的原因，以及之前动作和结果的交互日志，并以 `Reply with exactly one JSON action object.` 结尾。一次读取最多返回 `roles.maxReadCharacters` 个字符。每个源 diff 最多显示 `roles.maxHistoryDiffCharacters` 个字符，默认等于 critic 审阅的最长 diff `roles.maxDiffCharacters`，因此每个已度量候选的 diff 都会完整显示。
 
 ##### Proposer 系统文本
 
@@ -191,7 +191,7 @@ Never encode task names, task-specific values, or expected answers: the harness 
 
 #### Token 影响
 
-每份草稿至多 `roles.proposerTurns` 个请求，每个请求重复上下文和不断增长的交互日志；每次 critic 拒绝都会启动一份具有相同上限的修复草稿。
+每份草稿至多 `roles.proposerTurns` 个请求，每个请求重复上下文和不断增长的交互日志；每次 critic 拒绝都会启动一份具有相同上限的修复草稿。上下文随运行增长：历史重复至多 `historyLimit` 条修改记录及其候选的源 diff，剪枝集重复其被接受候选的 diff，每个 diff 至多 `roles.maxHistoryDiffCharacters` 个字符；上下文窗口较小时应调低这两项。
 
 #### KV Cache 影响
 
@@ -214,7 +214,7 @@ Reject the change when any of these holds:
 
 1. Task fitting: the change encodes knowledge of particular tasks in the suite, such as task names or ids, entity names, file names a task uses, expected outputs or answers, constants that only make sense for one task, or branches on features that identify a task. General working practice is acceptable. Ask whether the change would still make sense, and still help, on an unfamiliar task of the same kind from a different suite.
 
-2. No effect or lost safety: the change has no effect while claiming a mechanism (dead code, an unused setting, comments only), or it removes or disables an existing safety mechanism (context compaction, output limits, error handling, termination guards) without a working replacement.
+2. Inert machinery: the change adds machinery that has no effect while claiming a mechanism, such as dead code, an unused setting, or comments only.
 
 3. Grader gaming: the change reads, detects, reconstructs, or influences the grader at run time, encodes a threshold or reference value that could only come from a grader, or shapes the final output for the grader rather than for the task.
 
@@ -222,9 +222,7 @@ Reject the change when any of these holds:
 
 5. Run-time memorization: a memory, state, or skill mechanism persists or injects task-specific run-time data across trials, such as captured file contents, tool output, computed answers, task or entity names, or solutions keyed by task. Persisting general procedures without task entities is acceptable.
 
-6. Unbounded work: an added check, retry, or improvement loop has no exit, or finishing waits for a confirmation that may never arrive. A bounded pass with an explicit exit is acceptable.
-
-Otherwise accept. Judge intent and content, not style. Do not judge run-time correctness: you see only the diff, and later checks run the changed harness.
+Otherwise accept. The review targets suite-specific content, not particular harness components: a generic improvement to a prompt or a tool description is a valid change. Judge intent and content, not style. Do not judge run-time correctness: you see only the diff, and later checks run the changed harness.
 
 Reply with one JSON object and nothing else: {"verdict": "accept" or "reject", "reasons": ["..."], "riskNotes": ["..."]}
 ```
@@ -272,6 +270,6 @@ Reply with one JSON object and nothing else: {"verdict": "accept" or "reject", "
 <details>
 <summary>维护者的工作上下文 — 点击展开</summary>
 
-选择规则、编辑预算、历史摘要、探索、critic 筛查和缺失试验的计分遵循参考实现的规则，提示词为原创文本。余弦预算只在 `round = rounds` 时达到最小值，因此运行的最后一轮仍可能捆绑两项修改，与参考实现一致。
+选择规则、历史摘要、探索和缺失试验的计分遵循参考实现的规则，提示词为原创文本。论文正文与参考实现不一致时，本包遵循论文正文：proposer 的历史附带每个已度量候选的源 diff，并排除度量前即被拦下的候选（Eq. 10）；剪枝集附带被接受候选的 diff（D.2）；编辑预算的余弦一直延伸到最后一轮，使该轮取得最小值（按原文印出的 Eq. 4 以 t/T 计算第 0 至 T − 1 轮，结束时比最小值多 1）；critic 只按论文的理由拒绝：任务集特有的内容（包括评分器博弈和运行时记忆）、无效机制，以及已声明修改未涵盖的变更。
 
 </details>

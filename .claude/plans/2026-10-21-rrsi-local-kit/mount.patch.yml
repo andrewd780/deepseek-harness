@@ -1,0 +1,5 @@
+# Mounts the experimental /self-improve command into a dsh profile launched
+# from this checkout's source (pnpm dsh web). The path resolves from this file.
+- insert:
+    - id: self-improve
+      name: '../../../packages/experimental/self-improve/src/index.ts'

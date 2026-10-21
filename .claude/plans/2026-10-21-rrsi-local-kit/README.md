@@ -1,6 +1,6 @@
 # RRSI local run kit
 
-Working files for running `/self-improve` against a local Ollama model on your own machine: a smoke of the self-improvement loop with 3 evolve tasks, 1 held-out task, 1 round, 1 candidate, and 1 trial per task (8 trials). Every trial is a fresh `dsh` runtime routed to your Ollama server. Remove this directory before proposing the work upstream.
+Working files for running `/self-improve` against a local Ollama model on your own machine: a smoke of the self-improvement loop with 3 evolve tasks, 1 held-out task, 1 round, 1 candidate, and 1 trial per task (11 trials, 3 of them measuring the noise band). Every trial is a fresh `dsh` runtime routed to your Ollama server. Remove this directory before proposing the work upstream.
 
 ## Before you start
 
@@ -55,6 +55,7 @@ In the Web UI, open `~/rrsi-local` as the workspace, then type in a session:
 ```text
 /self-improve status run.json
 /self-improve baseline run.json
+/self-improve calibrate run.json 1
 /self-improve round run.json
 /self-improve heldout run.json
 /self-improve status run.json
@@ -70,7 +71,8 @@ Every action except `status` runs as a background job; its result appears when t
 
 ## What to expect
 
-- Each task moves the score by 0.33, and `delta` is 0.3, so the round accepts a candidate only if it gains a task without losing one. A smoke that ends with "no admissible candidate" is still a complete run.
-- Wall time depends on the model: 8 trials plus the role requests.
+- Each task moves the score by 0.33. The noise band δ is measured, not chosen, as the paper's E.1 requires: `calibrate run.json 1` repeats the baseline once, and δ is how far apart the two scores land (0 when they match). Above δ a gain must pay for its extra tokens, 25% per additional passing trial; within δ only a token saving or a new structural component admits a candidate. A smoke that ends with "no admissible candidate" is still a complete run.
+- `historyLimit` 8 and `roles.maxHistoryDiffCharacters` 4000 keep the proposer's history of past candidates and their diffs inside a 32k window once `rounds` is above 1. They shorten what the paper's proposer sees, so raise them on a larger window.
+- Wall time depends on the model: 11 trials plus the role requests.
 - Locally, tokens cost time, not money; the 1M-token ceiling was set for the DeepSeek route.
 - What was verified without a real model: the run files parse with the plugin's own loaders, both patches compose (`--dump-config`), the mount imports the plugin from source (a planted wrong path fails to import), the policy patch holds the sandbox at `workspace-write` even under an overlay that sets `danger-full-access`, and the loop measures real `dsh` runtimes end to end against a stand-in model (`tests/real-runtime.e2e.ts`). This kit's run on your model is the first real-model run.

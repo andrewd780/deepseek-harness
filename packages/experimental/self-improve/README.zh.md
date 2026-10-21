@@ -44,7 +44,7 @@ kind: "package-reference"
 1. **演化目录** — 一个受跟踪、位于运行目录之外的目录，可包含 `overlay.patch.yml`（每次试验在策略补丁之前应用的 profile 补丁）、`AGENTS.md`（复制到每次试验的 Harness home，作为用户全局指令）和 `skills/`（复制到同一位置作为用户 skills）。overlay 只能设置 [`DSH_OVERLAY_RULES`](src/evolved-directory.ts) 列出的压缩、工具结果修剪、输出溢出、系统提示词和重复工具提醒设置，以及关闭工具；overlay 违反这些规则的度量会在任何试验启动之前失败，每次试验加载的是已检查条目的 JSON 副本。
 2. **策略补丁** — 在 overlay 之后应用的冻结 profile 补丁：试验的模型配置行、权限、沙箱模式，以及候选不得修改的每一行。试验在无人值守下运行，因此补丁必须授予任务所需的权限。
 3. **任务集** — 一个 JSON 任务文件，每个任务包含提示词、可选的起始工作区、划分（`evolve` 或 `heldout`）和检查：对最终回复的 `answer` 模式、对试验留下的文件的 `file` 模式，或必须在工作区中以 0 退出的 `command`。试验的奖励是其通过的检查所占比例。格式由 [`src/suite.ts`](src/suite.ts) 定义。
-4. **运行 spec** — 一个 JSON 文件，指明任务集、演化目录、试验路由、试验接收的操作者环境变量、搜索角色的路由，以及噪声带 `delta`：一个数值或 `"calibrate"`。省略的常量取参考编码实例的值：20 轮、每轮 2 个候选、每个任务 2 次试验，编辑预算从 4 退火到 1。成本规则对每多通过一次试验允许增加 25% 的 token（`selection.costPerPass`），无论任务集大小都沿用参考实现的这一比率；在参考实现的 178 次试验上即 β₁ = 44.5。格式由 [`src/spec.ts`](src/spec.ts) 定义。
+4. **运行 spec** — 一个 JSON 文件，指明任务集、演化目录、试验路由、试验接收的操作者环境变量、搜索角色的路由，以及噪声带 `delta`：一个数值或 `"calibrate"`。需要校准的 spec 须指明 `calibration.method`：`spread` 取 baseline 重复度量分数之间的最大差值（论文的定义），`z` 取两次度量之差的 `calibration.z`（默认 2）个偏差（参考实现的估计量，在两次度量上等于差值的两倍）。省略的常量取参考编码实例的值：20 轮、每轮 2 个候选、每个任务 2 次试验，编辑预算从 4 退火到 1。成本规则对每多通过一次试验允许增加 25% 的 token（`selection.costPerPass`），无论任务集大小都沿用参考实现的这一比率；在参考实现的 178 次试验上即 β₁ = 44.5。格式由 [`src/spec.ts`](src/spec.ts) 定义。
 
 ```json
 {
@@ -53,7 +53,8 @@ kind: "package-reference"
   "evolvedDirectory": "harness/evolved",
   "trial": { "policyPatches": ["policy.patch.yml"], "provider": "deepseek", "model": "deepseek-v4-flash", "forwardEnv": ["DEEPSEEK_API_KEY"] },
   "roles": { "provider": "deepseek", "model": "deepseek-v4-pro" },
-  "delta": "calibrate"
+  "delta": "calibrate",
+  "calibration": { "method": "spread" }
 }
 ```
 
@@ -68,7 +69,7 @@ kind: "package-reference"
 /self-improve status run.json
 ```
 
-除 `status` 外，每个动作都会启动一个由调用 agent 拥有的后台任务；任务输出逐阶段说明进展，其结果报告结论。`baseline` 度量 evolve 分支的起始提交。`calibrate` 再次度量该 baseline，并保存 `"delta": "calibrate"` 的 spec 所使用的噪声带；每次重复花费一次 baseline 度量，估计效果优于基于单次度量的 bootstrap。`round` 运行接下来的若干轮，`run` 运行所有剩余轮次，`heldout` 在 held-out 任务上度量最新的 incumbent 或指定的轨迹条目。
+除 `status` 外，每个动作都会启动一个由调用 agent 拥有的后台任务；任务输出逐阶段说明进展，其结果报告结论。`baseline` 度量 evolve 分支的起始提交。`calibrate` 再次度量该 baseline，并按 spec 的 `calibration.method` 保存 `"delta": "calibrate"` 的 spec 所使用的噪声带；每次重复花费一次 baseline 度量。`spread` 至少需要一次重复；`z` 在没有重复时基于 baseline 的试验做 bootstrap，估计较弱。`round` 运行接下来的若干轮，`run` 运行所有剩余轮次，`heldout` 在 held-out 任务上度量最新的 incumbent 或指定的轨迹条目。
 
 被接受的候选会移动 evolve 分支，除非 spec 另行命名，否则为 `self-improve/<name>`。用 `git diff <start> self-improve/<name> -- <evolved directory>` 比较胜出者，并自行应用它，例如用 `--patch` 传入其 overlay。evolve 分支不得在任何地方被检出。
 
@@ -259,6 +260,7 @@ Reply with one JSON object and nothing else: {"verdict": "accept" or "reject", "
 - **成本依赖精确用量** — 轮次无法证明其 token 用量的试验不报告用量；当一次度量的所有试验都不报告 token 时，成本变化为 0，成本规则会接受任何高于噪声带的增益。
 - **incumbent 只度量一次** — 候选与其已保存的度量结果比较，下限跟随迄今最佳分数，因此随着运行推进，同等好的 harness 越过下限的概率降低。
 - **单次度量的校准** — 基于每个任务少量试验的 bootstrap 遗漏运行间方差并低估噪声带；请使用重复度量进行校准。
+- **少量重复的 spread** — 两三次度量的 `spread` 本身只是一次带噪声的抽样，分数完全相同时噪声带为 0，任何增益都会被当作真实增益。
 - **候选按顺序处理** — 一轮依次起草并度量其候选；`trial.concurrency` 只并行同一次度量中的试验。
 - **推迟的参考实现部分** — 逐任务摘要、预测记分板和对已保存轮次的重新裁决尚未实现。
 - **仅限命令** — 运行只能在带有后台任务的 composition 中从 `/self-improve` 启动；没有模型工具。

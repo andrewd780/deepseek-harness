@@ -7,7 +7,10 @@
  * cost allowance per gain defaults to 25% more tokens per passing trial
  * (`selection.costPerPass`), which is the reference's β₁ of 44.5 on its 178
  * trials; `selection.costPerGain` sets β₁ per unit of score instead, and
- * `scoreWeightPerPass` and `scoreWeight` set w_s the same two ways.
+ * `scoreWeightPerPass` and `scoreWeight` set w_s the same two ways. A spec
+ * whose `delta` is `"calibrate"` names `calibration.method`: `"spread"`, the
+ * paper's largest difference between base evaluations, or `"z"`, the
+ * reference implementation's z deviations.
  *
  * ```json
  * {
@@ -21,7 +24,8 @@
  *     "forwardEnv": ["DEEPSEEK_API_KEY"]
  *   },
  *   "roles": { "provider": "deepseek", "model": "deepseek-v4-pro" },
- *   "delta": "calibrate"
+ *   "delta": "calibrate",
+ *   "calibration": { "method": "spread" }
  * }
  * ```
  *
@@ -82,7 +86,8 @@ export interface RunSpec {
   readonly trial: TrialSpec
   readonly roles: RolesSpec
   readonly settings: RunSettings
-  readonly calibration: CalibrationSettings
+  /** How `calibrate` estimates δ; `undefined` when the spec names no method, which only a fixed `delta` allows. */
+  readonly calibration: CalibrationSettings | undefined
 }
 
 const NAME = /^[\w.-]+$/
@@ -190,12 +195,30 @@ export function resolveRunSpec(value: unknown, base: string, problems: string[])
       maxDiffCharacters: roles.count('maxDiffCharacters', 120_000),
     },
     settings,
-    calibration: {
-      z: calibration.number('z', 2),
-      resamples: calibration.count('resamples', 2_000),
-      seed: calibration.count('seed', 7, undefined, 0),
-    },
+    calibration: calibrationSettings(calibration, delta === 'calibrate', problems),
   }
+}
+
+const DEVIATION_KEYS = ['z', 'resamples', 'seed'] as const
+
+/**
+ * The named calibration method with its settings. A spec that calibrates δ
+ * must name a method; deviation settings without the `z` method are a problem.
+ */
+function calibrationSettings(fields: Fields, required: boolean, problems: string[]): CalibrationSettings | undefined {
+  const method = fields.raw('method')
+  const tuned = DEVIATION_KEYS.filter(key => fields.raw(key) !== undefined)
+  if (method === 'z') {
+    return { method, z: fields.number('z', 2), resamples: fields.count('resamples', 2_000), seed: fields.count('seed', 7, undefined, 0) }
+  }
+  if (method === 'spread') {
+    for (const key of tuned) problems.push(`calibration.${key} applies only to the z method`)
+    return { method }
+  }
+  if (method !== undefined || required || tuned.length > 0) {
+    problems.push(`calibration.method must be "spread" or "z"${required ? ' when delta is "calibrate"' : ''}`)
+  }
+  return undefined
 }
 
 /** Reads typed fields of one object, recording a problem per invalid field. */

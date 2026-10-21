@@ -293,8 +293,10 @@ async function perform(
       return `baseline ${revision.commit}: score ${revision.score.toFixed(4)}`
     }
     case 'calibrate': {
+      if (spec.calibration === undefined) throw new Error('self-improve calibrate needs calibration.method, "spread" or "z", in the run spec')
       const calibration = await run.calibrate(number ?? 2, spec.calibration, signal)
-      return `noise band ${calibration.delta.toFixed(5)} (${calibration.method}, scores ${calibration.scores.map(score => score.toFixed(4)).join(', ')})`
+      const method = calibration.method === 'spread' ? 'spread' : `z ${calibration.z}, ${calibration.estimate}`
+      return `noise band ${calibration.delta.toFixed(5)} (${method}, scores ${calibration.scores.map(score => score.toFixed(4)).join(', ')})`
     }
     case 'heldout': {
       const evaluation = await run.heldout(number, signal)

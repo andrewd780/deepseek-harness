@@ -1,36 +1,39 @@
 /**
  * The noise band δ of a run: how far two independent evaluations of the same
- * harness revision differ.
+ * harness revision differ, by one of two named methods.
  *
- * With two or more evaluations of the unchanged base revision the null
- * difference is observed directly: its standard deviation is the sample
- * standard deviation of the scores times √2. With one evaluation, or when the
- * scores coincide, the standard error of the score is bootstrapped over trials
- * within each task, and two independent evaluations differ with standard
- * deviation √2 times that error. Either way δ = z × deviation, so an unchanged
- * revision clears the floor S* − δ about 97.5% of the time at z = 2. Repeated
- * evaluations are the stronger estimate: a bootstrap over few trials per task
- * understates variance that only a second run exposes.
+ * `spread` is the paper's definition: the largest difference between the
+ * scores of evaluations of the unchanged base revision, so it needs at least
+ * two. The spread of few evaluations is itself one noisy draw, and identical
+ * scores give δ = 0, which counts every gain as real.
+ *
+ * `z` is the reference implementation's estimator, δ = z × the deviation of
+ * the difference of two evaluations. With two or more evaluations that
+ * deviation is the sample standard deviation of their scores times √2, so at
+ * z = 2 two evaluations give twice their spread. With one evaluation, or when
+ * the scores coincide, the standard error of the score is bootstrapped over
+ * trials within each task, and two independent evaluations differ with
+ * standard deviation √2 times that error. At z = 2 an unchanged revision
+ * clears the floor S* − δ about 97.5% of the time. Repeated evaluations are
+ * the stronger estimate: a bootstrap over few trials per task understates
+ * variance that only a second run exposes.
  *
  * @module @deepseek-ai/dsh-experimental-self-improve/calibrate
  */
 
 import type { EvaluationResult } from './evaluate.ts'
 
-/** The calibrated noise band and the estimates behind it. */
-export interface Calibration {
-  readonly delta: number
-  readonly z: number
-  /** The deviation δ rests on. */
-  readonly deviation: number
-  readonly method: 'repeated' | 'bootstrap'
-  /** The bootstrapped deviation, reported for either method. */
-  readonly bootstrapDeviation: number
-  readonly scores: readonly number[]
+/** How a run turns evaluations of its base revision into δ. */
+export type CalibrationSettings = SpreadSettings | DeviationSettings
+
+/** δ is the largest difference between two evaluations' scores. */
+export interface SpreadSettings {
+  readonly method: 'spread'
 }
 
-/** Bootstrap settings. */
-export interface CalibrationSettings {
+/** δ is z deviations of the difference of two evaluations. */
+export interface DeviationSettings {
+  readonly method: 'z'
   /** Multiple of the null deviation that forms δ. */
   readonly z: number
   readonly resamples: number
@@ -38,25 +41,53 @@ export interface CalibrationSettings {
   readonly seed: number
 }
 
+/** The calibrated noise band and the estimates behind it. */
+export type Calibration = SpreadCalibration | DeviationCalibration
+
+/** A noise band from the spread of repeated evaluations. */
+export interface SpreadCalibration {
+  readonly method: 'spread'
+  readonly delta: number
+  readonly scores: readonly number[]
+}
+
+/** A noise band from the deviation of the difference of two evaluations. */
+export interface DeviationCalibration {
+  readonly method: 'z'
+  readonly delta: number
+  readonly z: number
+  /** The deviation δ rests on. */
+  readonly deviation: number
+  /** Whether the deviation comes from repeated evaluations or from a bootstrap. */
+  readonly estimate: 'repeated' | 'bootstrap'
+  /** The bootstrapped deviation, reported for either estimate. */
+  readonly bootstrapDeviation: number
+  readonly scores: readonly number[]
+}
+
 /**
  * Calibrate δ from evaluations of the unchanged base revision.
- * @param evaluations - one or more evaluations of the same revision on the same tasks.
- * @param settings - z, resamples, and seed.
+ * @param evaluations - evaluations of the same revision on the same tasks: one or more for `z`, two or more for `spread`.
+ * @param settings - the method and its settings.
  * @returns the calibration.
- * @throws Error when `evaluations` is empty.
+ * @throws Error when `evaluations` is empty, or holds one evaluation for `spread`.
  */
 export function calibrate(evaluations: readonly EvaluationResult[], settings: CalibrationSettings): Calibration {
   const first = evaluations[0]
   if (first === undefined) throw new Error('self-improve calibration needs at least one base evaluation')
   const scores = evaluations.map(evaluation => evaluation.score)
+  if (settings.method === 'spread') {
+    if (scores.length < 2) throw new Error('self-improve spread calibration needs at least two base evaluations; calibrate with repeats')
+    return { method: 'spread', delta: Math.max(...scores) - Math.min(...scores), scores }
+  }
   const pooled = poolTrials(evaluations)
   const pooledTrials = evaluations.reduce((sum, evaluation) => sum + evaluation.trials, 0)
   const error = bootstrapError(pooled, settings.resamples, settings.seed)
   const bootstrapDeviation = Math.SQRT2 * error * Math.sqrt(pooledTrials / first.trials)
   const observed = scores.length >= 2 ? sampleDeviation(scores) * Math.SQRT2 : 0
-  const method = observed > 0 ? 'repeated' : 'bootstrap'
-  const deviation = method === 'repeated' ? observed : bootstrapDeviation
-  return { delta: settings.z * deviation, z: settings.z, deviation, method, bootstrapDeviation, scores }
+  const estimate = observed > 0 ? 'repeated' : 'bootstrap'
+  const deviation = estimate === 'repeated' ? observed : bootstrapDeviation
+  return { method: 'z', delta: settings.z * deviation, z: settings.z, deviation, estimate, bootstrapDeviation, scores }
 }
 
 interface Trial {

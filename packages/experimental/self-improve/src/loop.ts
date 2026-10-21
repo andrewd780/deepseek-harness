@@ -183,8 +183,8 @@ export class SelfImproveRun {
 
   /**
    * Measure H_0 again `repeats` times and calibrate δ from every measurement of it.
-   * @param repeats - additional measurements; 0 bootstraps from the baseline alone.
-   * @param settings - z, resamples, and seed.
+   * @param repeats - additional measurements; with `z`, 0 bootstraps from the baseline alone.
+   * @param settings - the method and its settings.
    * @param signal - cancellation.
    * @returns the calibration, also stored in the run directory.
    * @throws Error before the baseline, or once a round has run.

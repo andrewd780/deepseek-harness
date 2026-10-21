@@ -119,8 +119,16 @@ describe('/self-improve', () => {
     expect(await text.run('baseline run.json')).toEqual({ kind: 'error', text: 'jobs refused' })
   })
 
+  it('calibrates only with a named method', async () => {
+    const { job } = await harness({ spec: { calibration: { method: 'spread' } } })
+    expect(await job('baseline run.json')).toMatchObject({ status: 'completed' })
+    expect(await job('calibrate run.json')).toEqual({ status: 'completed', result: 'noise band 0.00000 (spread, scores 0.5000, 0.5000, 0.5000)' })
+    const unnamed = await harness()
+    expect(await unnamed.job('calibrate run.json')).toEqual({ status: 'failed', detail: 'self-improve calibrate needs calibration.method, "spread" or "z", in the run spec' })
+  })
+
   it('runs every action as a job and narrates the run', async () => {
-    const { job, started, run, repo, git } = await harness({ spec: { rounds: 2 } })
+    const { job, started, run, repo, git } = await harness({ spec: { rounds: 2, calibration: { method: 'z' } } })
     const head = await git('rev-parse', 'HEAD')
     expect(await job('round run.json')).toEqual({ status: 'failed', detail: matching(/has no baseline; measure the baseline first$/) })
     expect(await job('baseline run.json')).toEqual({ status: 'completed', result: `baseline ${head}: score 0.5000` })
@@ -129,7 +137,7 @@ describe('/self-improve', () => {
       `run loader: evolved directory harness/evolved of ${repo}, evolve branch self-improve/loader\n`,
       `baseline ${head}: score 0.5000, cost not reported\n`,
     ])
-    expect(await job('calibrate run.json')).toEqual({ status: 'completed', result: 'noise band 0.00000 (bootstrap, scores 0.5000, 0.5000, 0.5000)' })
+    expect(await job('calibrate run.json')).toEqual({ status: 'completed', result: 'noise band 0.00000 (z 2, bootstrap, scores 0.5000, 0.5000, 0.5000)' })
     expect(await job('round run.json 1')).toEqual({ status: 'completed', result: 'round 0: accepted A, score 0.5000' })
     expect(await job('run run.json')).toEqual({ status: 'completed', result: 'round 1: no admissible candidate, score 0.5000' })
     expect(await job('heldout run.json 0')).toEqual({ status: 'completed', result: 'held-out score 1.0000 over 1 task(s)' })

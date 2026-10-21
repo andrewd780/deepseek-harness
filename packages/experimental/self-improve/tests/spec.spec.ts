@@ -17,6 +17,7 @@ const minimal = {
   trial: { policyPatches: ['policy.patch.yml'], provider: 'deepseek', model: 'deepseek-v4-flash' },
   roles: { provider: 'deepseek', model: 'deepseek-v4-pro' },
   delta: 'calibrate',
+  calibration: { method: 'z' },
 }
 
 function resolved(value: unknown): { readonly problems: string[]; readonly spec: ReturnType<typeof resolveRunSpec> } {
@@ -37,7 +38,7 @@ describe('resolveRunSpec', () => {
       startPoint: 'HEAD',
       trial: { profile: 'sdk', policyPatches: ['/specs/policy.patch.yml'], forwardEnv: [], env: {}, timeoutMs: 1_800_000, concurrency: 1, maxPromptGrowth: undefined },
       roles: { maxOutputTokens: 16_384, proposerTurns: 40, criticAttempts: 3, maxDiffCharacters: 120_000 },
-      calibration: { z: 2, resamples: 2_000, seed: 7 },
+      calibration: { method: 'z', z: 2, resamples: 2_000, seed: 7 },
     })
     expect(spec.settings).toMatchObject({
       rounds: 20, variants: 2, trials: 2, minEdits: 1, maxEdits: 4, stallWindow: 3, reservedSlots: 1, pruneWindow: 4,
@@ -73,12 +74,24 @@ describe('resolveRunSpec', () => {
       repository: '../repo',
       trial: { ...minimal.trial, forwardEnv: ['DEEPSEEK_API_KEY'], env: { DSH_TELEMETRY_DISABLED: '1' }, maxPromptGrowth: 0.1 },
       selection: { costPerGain: 2 },
-      calibration: { seed: 0 },
+      calibration: { method: 'z', seed: 0 },
     })
     expect(problems).toEqual([])
     expect(spec).toMatchObject({ branch: 'evolve/x', repository: '/repo', trial: { forwardEnv: ['DEEPSEEK_API_KEY'], env: { DSH_TELEMETRY_DISABLED: '1' }, maxPromptGrowth: 0.1 } })
     expect(spec.settings).toMatchObject({ delta: 0.02, rounds: 5, selection: { costPerGain: { value: 2, perPass: false } } })
-    expect(spec.calibration.seed).toBe(0)
+    expect(spec.calibration).toEqual({ method: 'z', z: 2, resamples: 2_000, seed: 0 })
+  })
+
+  it('names the calibration method a calibrated spec needs, and settings it cannot use', () => {
+    expect(resolved({ ...minimal, calibration: { method: 'spread' } })).toMatchObject({ problems: [], spec: { calibration: { method: 'spread' } } })
+    expect(resolved({ ...minimal, delta: 0.02, calibration: undefined })).toMatchObject({ problems: [], spec: { calibration: undefined } })
+    expect(resolved({ ...minimal, calibration: undefined }).problems).toEqual(['calibration.method must be "spread" or "z" when delta is "calibrate"'])
+    expect(resolved({ ...minimal, delta: 0.02, calibration: { method: 'median' } }).problems).toEqual(['calibration.method must be "spread" or "z"'])
+    expect(resolved({ ...minimal, delta: 0.02, calibration: { z: 3 } }).problems).toEqual(['calibration.method must be "spread" or "z"'])
+    expect(resolved({ ...minimal, calibration: { method: 'spread', z: 3, seed: 1 } }).problems).toEqual([
+      'calibration.z applies only to the z method',
+      'calibration.seed applies only to the z method',
+    ])
   })
 
   it('names every invalid field', () => {

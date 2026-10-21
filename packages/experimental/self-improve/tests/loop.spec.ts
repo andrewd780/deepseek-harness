@@ -289,21 +289,24 @@ describe('SelfImproveRun rounds', () => {
 
 describe('SelfImproveRun noise band', () => {
   it('calibrates the baseline before the first round and reads the band from it', async () => {
-    const { run, store, domain, directory } = await harness({ delta: undefined })
-    await expect(run.calibrate(1, { z: 2, resamples: 100, seed: 1 })).rejects.toThrow('has no baseline')
+    const { run, store, domain, directory, lines } = await harness({ delta: undefined })
+    const z = { method: 'z' as const, z: 2, resamples: 100, seed: 1 }
+    await expect(run.calibrate(1, z)).rejects.toThrow('has no baseline')
     await run.baseline()
     await expect(run.round()).rejects.toThrow('self-improve has no noise band: configure delta or calibrate the baseline')
     domain.rewards.set('base-c0-1', { a: [1, 1], b: [0, 0] })
     domain.rewards.set('base-c0-2', { a: [0, 0], b: [0, 0] })
-    const calibration = await run.calibrate(2, { z: 2, resamples: 100, seed: 1 })
-    expect(calibration.method).toBe('repeated')
+    const calibration = await run.calibrate(2, z)
+    expect(calibration).toMatchObject({ method: 'z', estimate: 'repeated' })
     expect([...store.parents.keys()]).toEqual([])
     expect(domain.evaluations.map(request => request.job)).toEqual(['base-c0', 'base-c0-1', 'base-c0-2'])
-    expect(await run.calibrate(2, { z: 2, resamples: 100, seed: 1 })).toEqual(calibration)
+    expect(await run.calibrate(2, { method: 'spread' })).toEqual({ method: 'spread', delta: 0.5, scores: [0.25, 0.5, 0] })
+    expect(lines.at(-1)).toBe('calibrated delta 0.50000 (spread, 3 evaluation(s))')
+    expect(await run.calibrate(2, z)).toEqual(calibration)
     expect(domain.evaluations).toHaveLength(3)
     await run.round()
     expect(JSON.parse(await directory.readRoundText(0, 'directives.json') ?? '{}')).toMatchObject({ delta: calibration.delta })
-    await expect(run.calibrate(0, { z: 2, resamples: 100, seed: 1 })).rejects.toThrow('calibrates the baseline only before the first round')
+    await expect(run.calibrate(0, z)).rejects.toThrow('calibrates the baseline only before the first round')
   })
 })
 

@@ -44,7 +44,7 @@ A run uses four kinds of files in a git repository:
 1. **Evolved directory** — a tracked directory, outside the runs directory, holding any of `overlay.patch.yml` (a profile patch every trial applies before the policy patches), `AGENTS.md` (copied into each trial's Harness home as user-global instructions), and `skills/` (copied there as user skills). The overlay may only set the compaction, tool-result pruning, output spilling, system prompt, and repeated-tool reminder settings that [`DSH_OVERLAY_RULES`](src/evolved-directory.ts) lists, and turn tools off; a measurement whose overlay breaks these rules fails before any trial starts, and each trial loads a JSON copy of the checked entries.
 2. **Policy patches** — frozen profile patches applied after the overlay: the trial's model rows, permissions, sandbox mode, and every row a candidate must not change. Trials run without a person, so the patches must grant the permissions the tasks need.
 3. **Task suite** — a JSON file of tasks, each with a prompt, an optional starting workspace, a split (`evolve` or `heldout`), and checks: an `answer` pattern for the final response, a `file` pattern for a file the trial leaves, or a `command` that must exit 0 in the workspace. A trial's reward is the fraction of its checks that pass. [`src/suite.ts`](src/suite.ts) defines the format.
-4. **Run spec** — a JSON file naming the suite, the evolved directory, the trial route, the operator variables trials receive, the route of the search roles, and `delta`, the noise band, as a number or `"calibrate"`. Omitted constants take the reference coding instance's values: 20 rounds, 2 candidates per round, 2 trials per task, and an edit budget annealed from 4 to 1. The cost rule allows 25% more tokens per additional passing trial (`selection.costPerPass`), the reference's rate whatever the suite's size; on its 178 trials that is β₁ = 44.5. [`src/spec.ts`](src/spec.ts) defines the format.
+4. **Run spec** — a JSON file naming the suite, the evolved directory, the trial route, the operator variables trials receive, the route of the search roles, and `delta`, the noise band, as a number or `"calibrate"`. A spec that calibrates names `calibration.method`: `spread`, the largest difference between the baseline's repeated scores (the paper's definition), or `z`, `calibration.z` (default 2) deviations of the difference of two evaluations (the reference implementation's estimator, twice the spread on two evaluations). Omitted constants take the reference coding instance's values: 20 rounds, 2 candidates per round, 2 trials per task, and an edit budget annealed from 4 to 1. The cost rule allows 25% more tokens per additional passing trial (`selection.costPerPass`), the reference's rate whatever the suite's size; on its 178 trials that is β₁ = 44.5. [`src/spec.ts`](src/spec.ts) defines the format.
 
 ```json
 {
@@ -53,7 +53,8 @@ A run uses four kinds of files in a git repository:
   "evolvedDirectory": "harness/evolved",
   "trial": { "policyPatches": ["policy.patch.yml"], "provider": "deepseek", "model": "deepseek-v4-flash", "forwardEnv": ["DEEPSEEK_API_KEY"] },
   "roles": { "provider": "deepseek", "model": "deepseek-v4-pro" },
-  "delta": "calibrate"
+  "delta": "calibrate",
+  "calibration": { "method": "spread" }
 }
 ```
 
@@ -68,7 +69,7 @@ A run uses four kinds of files in a git repository:
 /self-improve status run.json
 ```
 
-Every action except `status` starts a background job owned by the invoking agent; its output narrates each stage and its result reports the outcome. `baseline` measures the evolve branch's starting commit. `calibrate` measures that baseline again and stores the noise band a spec with `"delta": "calibrate"` uses; each repeat costs one baseline measurement and estimates the band better than a bootstrap over one measurement. `round` runs the next rounds, `run` runs every remaining round, and `heldout` measures the latest incumbent, or the given trajectory entry, on the held-out tasks.
+Every action except `status` starts a background job owned by the invoking agent; its output narrates each stage and its result reports the outcome. `baseline` measures the evolve branch's starting commit. `calibrate` measures that baseline again and stores the noise band a spec with `"delta": "calibrate"` uses, by the spec's `calibration.method`; each repeat costs one baseline measurement. `spread` needs at least one repeat; `z` with none bootstraps over the baseline's trials, a weaker estimate. `round` runs the next rounds, `run` runs every remaining round, and `heldout` measures the latest incumbent, or the given trajectory entry, on the held-out tasks.
 
 Accepted candidates move the evolve branch, `self-improve/<name>` unless the spec names another. Compare a winner with `git diff <start> self-improve/<name> -- <evolved directory>`, and apply it yourself, for example by passing its overlay with `--patch`. The evolve branch must not be checked out anywhere.
 
@@ -259,6 +260,7 @@ Every trial is an independent runtime; nothing carries between trials or into th
 - **Cost needs exact usage** — a trial whose turns cannot prove their token usage reports none; when no trial of an evaluation reports tokens, the cost change is 0 and the cost rule admits any gain above the band.
 - **The incumbent is measured once** — candidates are compared with its stored evaluation, and the floor follows the best score so far, so an equally good harness clears it less often as a run proceeds.
 - **One-measurement calibration** — a bootstrap over few trials per task misses run-to-run variance and underestimates the band; calibrate with repeats.
+- **Few-repeat spread** — the `spread` of two or three evaluations is itself one noisy draw, and identical scores give a band of 0, which counts every gain as real.
 - **Sequential candidates** — a round drafts and measures its candidates one after another; `trial.concurrency` parallelizes trials within one measurement.
 - **Deferred reference parts** — per-task digests, the prediction scoreboard, and re-adjudication of stored rounds are not implemented.
 - **Command only** — runs start from `/self-improve` in compositions with background jobs; there is no model tool.

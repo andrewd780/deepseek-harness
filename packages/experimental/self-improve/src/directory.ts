@@ -326,13 +326,13 @@ function taskResultOf(value: unknown): TaskResult | undefined {
 }
 
 function isCalibration(value: unknown): value is Calibration {
-  return isRecord(value)
-    && typeof value['delta'] === 'number'
+  if (!isRecord(value) || typeof value['delta'] !== 'number' || !isNumberArray(value['scores'])) return false
+  if (value['method'] === 'spread') return true
+  return value['method'] === 'z'
     && typeof value['z'] === 'number'
     && typeof value['deviation'] === 'number'
-    && (value['method'] === 'repeated' || value['method'] === 'bootstrap')
+    && (value['estimate'] === 'repeated' || value['estimate'] === 'bootstrap')
     && typeof value['bootstrapDeviation'] === 'number'
-    && isNumberArray(value['scores'])
 }
 
 function isEdit(value: unknown): value is CandidateEdit {

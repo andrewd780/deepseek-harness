@@ -49,9 +49,12 @@ describe('RunDirectory', () => {
     history.appendCandidate(0, 'A', [{ id: 'C1', component: 'prompt', hypothesis: 'h' }], 'smoke-failed')
     await run.writeHistory(history)
     expect((await run.readHistory(componentSet)).records()).toEqual(history.records())
-    const calibration = { delta: 0.02, z: 2, deviation: 0.01, method: 'bootstrap' as const, bootstrapDeviation: 0.01, scores: [0.5] }
+    const calibration = { method: 'z' as const, delta: 0.02, z: 2, deviation: 0.01, estimate: 'bootstrap' as const, bootstrapDeviation: 0.01, scores: [0.5] }
     await run.writeCalibration(calibration)
     expect(await run.readCalibration()).toEqual(calibration)
+    const spread = { method: 'spread' as const, delta: 0.03, scores: [0.5, 0.53] }
+    await run.writeCalibration(spread)
+    expect(await run.readCalibration()).toEqual(spread)
     const ready = { status: 'ready' as const, variant: 'A', commit: 'c1', branch: 'b', summary: 's', edits: [{ id: 'C1', component: 'prompt', hypothesis: 'h' }] }
     const gated = { status: 'gated' as const, variant: 'B', outcome: 'smoke-failed' as const, detail: 'd', edits: [] }
     await run.writeCandidate(0, ready)
@@ -85,6 +88,10 @@ describe('RunDirectory', () => {
     await plant(run, 'trajectory.json', '{')
     await expect(run.readTrajectory()).rejects.toThrow('is not JSON')
     await plant(run, 'calibration.json', '{"delta":1}')
+    await expect(run.readCalibration()).rejects.toThrow('is not a self-improve calibration')
+    await plant(run, 'calibration.json', '{"delta":1,"z":2,"deviation":0.5,"method":"bootstrap","bootstrapDeviation":0.5,"scores":[0.5]}')
+    await expect(run.readCalibration()).rejects.toThrow('is not a self-improve calibration')
+    await plant(run, 'calibration.json', '{"method":"z","delta":1,"z":2,"deviation":0.5,"estimate":"guess","bootstrapDeviation":0.5,"scores":[0.5]}')
     await expect(run.readCalibration()).rejects.toThrow('is not a self-improve calibration')
     await plant(run, join('rounds', '0', 'A', 'candidate.json'), '{"status":"ready","variant":"B","edits":[]}')
     await expect(run.readCandidate(0, 'A')).rejects.toThrow('is not a self-improve candidate record')

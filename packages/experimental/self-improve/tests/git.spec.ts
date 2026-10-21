@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -35,7 +35,8 @@ interface Repository {
 }
 
 async function repository(): Promise<Repository> {
-  const root = await mkdtemp(join(tmpdir(), 'dsh-self-improve-git-'))
+  // Git reports canonical paths; the temporary directory can sit behind a symbolic link (macOS `/var`).
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-self-improve-git-')))
   roots.push(root)
   const repo = join(root, 'repo')
   await mkdir(join(repo, 'evolved'), { recursive: true })

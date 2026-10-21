@@ -137,11 +137,17 @@ describe('RunDirectory', () => {
   it('holds the run for one operation at a time', async () => {
     const run = await directory()
     let release: () => void = () => {}
+    let entered: () => void = () => {}
+    const holds = new Promise<void>((resolve) => {
+      entered = resolve
+    })
     const holding = run.exclusive(async () => await new Promise<string>((resolve) => {
       release = () => {
         resolve('first')
       }
+      entered()
     }))
+    await holds
     await expect(run.exclusive(async () => 'second')).rejects.toThrow('timed out waiting for the writer lock')
     release()
     expect(await holding).toBe('first')

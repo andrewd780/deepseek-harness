@@ -55,7 +55,7 @@ const GIT_ENV: NodeJS.ProcessEnv = {
  * @param directory - a directory inside the repository.
  * @param timeoutMs - the command's deadline.
  * @param signal - cancellation.
- * @returns the absolute repository root.
+ * @returns the absolute repository root as git reports it, with symbolic links resolved.
  * @throws Error when the directory is not inside a git repository.
  */
 export async function repositoryRoot(run: ProcessRunner, directory: string, timeoutMs: number, signal?: AbortSignal): Promise<string> {

@@ -7,6 +7,8 @@ export interface MockServer {
   paths: string[]
   requests: unknown[]
   headers: IncomingMessage['headers'][]
+  /** Headers of each `GET …/api/ps` probe, which the script never answers. */
+  probes: IncomingMessage['headers'][]
   readonly closedResponses: number
   requestReceived: Promise<void>
   responseClosed: Promise<void>
@@ -58,7 +60,20 @@ export const anthropicTextEvents = [
   anthropicFrame({ type: 'message_stop' }),
 ]
 
-/** Local provider stand-in: replays scripted behaviors per request. */
+/** A reply to Ollama's process listing, `GET …/api/ps`. */
+export interface ProcessListingReply {
+  status?: number
+  body?: string
+  delayMs?: number
+  /** Send a 200 with this partial body and never finish it. */
+  stallAfter?: string
+}
+
+/**
+ * Local provider stand-in: replays scripted behaviors per request. Ollama
+ * process-listing probes are answered by `processListing` instead (default
+ * 404, as a server without Ollama's API answers) and recorded only in `probes`.
+ */
 export async function mockServer(script: {
   status?: number
   /** SSE frames: a string is sent as `data:` alone; a pair also names the frame's `event:`. */
@@ -68,10 +83,11 @@ export async function mockServer(script: {
   /** Keep the SSE response open after its scripted events until the client disconnects. */
   holdOpen?: boolean
   headers?: Record<string, string>
-}[]): Promise<MockServer> {
+}[], options: { processListing?: ProcessListingReply | (() => ProcessListingReply) } = {}): Promise<MockServer> {
   const paths: string[] = []
   const requests: unknown[] = []
   const headers: IncomingMessage['headers'][] = []
+  const probes: IncomingMessage['headers'][] = []
   let closedResponses = 0
   const requestReceived = Promise.withResolvers<undefined>()
   const responseClosed = Promise.withResolvers<undefined>()
@@ -85,6 +101,20 @@ export async function mockServer(script: {
     const chunks: Buffer[] = []
     request.on('data', (chunk: Buffer) => { chunks.push(chunk) })
     request.on('end', () => {
+      if (request.method === 'GET' && (request.url ?? '').endsWith('/api/ps')) {
+        probes.push(request.headers)
+        const reply = typeof options.processListing === 'function'
+          ? options.processListing()
+          : options.processListing ?? { status: 404 }
+        const answer = (): void => {
+          response.writeHead(reply.status ?? 200, { 'content-type': 'application/json' })
+          if (reply.stallAfter === undefined) response.end(reply.body ?? '{}')
+          else response.write(reply.stallAfter)
+        }
+        if (reply.delayMs === undefined) answer()
+        else timer = setTimeout(answer, reply.delayMs)
+        return
+      }
       const bytes = Buffer.concat(chunks)
       // Codex SSE requests use zstd compression when the host supports it.
       const body = (request.headers['content-encoding'] === 'zstd' ? zstdDecompressSync(bytes) : bytes).toString('utf8')
@@ -128,6 +158,7 @@ export async function mockServer(script: {
     paths,
     requests,
     headers,
+    probes,
     requestReceived: requestReceived.promise,
     responseClosed: responseClosed.promise,
     get closedResponses() { return closedResponses },

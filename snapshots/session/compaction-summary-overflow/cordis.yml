@@ -1,0 +1,15 @@
+# Context-overflow recovery under shipped compaction defaults when the declared
+# window exceeds the window the endpoint serves.
+
+- id: agent-instructions
+  disabled: true
+
+- id: llm-deepseek
+  config:
+    models:
+      - id: deepseek-v4-flash
+        contextWindow: 262144
+
+- insert:
+    - id: compaction-working-directory
+      name: '../../../packages/test-support/session-snapshot/tests/fixtures/compaction-working-directory.ts'

@@ -74,9 +74,25 @@ const EXCEEDS_MODEL_CONTEXT = new RegExp(
 )
 
 /**
- * Recognize the context-overflow wording used by OpenAI-compatible providers
- * and library adapters. Adapters pass all available provider code, type, and
- * message text so both thrown and in-band delivery styles share one classifier.
+ * Self-hosted server wordings the general patterns miss: vLLM's engine-level
+ * prompt check, llama.cpp's decode and generation failures when the slot's
+ * context is full, Text Generation Inference input validation, and LiteLLM's
+ * exception class name.
+ */
+const SERVER_CONTEXT_OVERFLOW = [
+  /\bprompt \(length \d+\) is longer than the maximum model length\b/i,
+  /\bcontext size has been exceeded\b/i,
+  /\bcontext shift is disabled\b/i,
+  /`?inputs`? tokens \+ `?max_new_tokens`? must be <= \d+/i,
+  /`?inputs`? must have less than \d+ tokens\b/i,
+  /\bContextWindowExceededError\b/,
+] as const
+
+/**
+ * Recognize the context-overflow wording used by OpenAI-compatible providers,
+ * self-hosted inference servers, and library adapters. Adapters pass all
+ * available provider code, type, and message text so both thrown and in-band
+ * delivery styles share one classifier.
  * @param detail - provider error code/type/message text joined into one string.
  * @returns true when the detail identifies a request exceeding the model context window.
  */
@@ -86,6 +102,7 @@ export function isContextWindowExceededError(detail: string): boolean {
     || TOO_LARGE_FOR_CONTEXT.test(detail)
     || /\b(?:input|prompt|request)\s+(?:is\s+)?too\s+(?:long|large)\s+for\s+(?:this|the)\s+model\b/i.test(detail)
     || EXCEEDS_MODEL_CONTEXT.test(detail)
+    || SERVER_CONTEXT_OVERFLOW.some(pattern => pattern.test(detail))
 }
 
 /**

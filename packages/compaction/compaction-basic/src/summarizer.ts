@@ -15,8 +15,10 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 interface SummaryConfig {
   readonly summarizationProvider: string
   readonly summarizationModel: string
-  readonly maxTokens: number
 }
+
+/** Failure code of a summary request whose output stopped at its generation cap. */
+export const SUMMARY_TRUNCATED_CODE = 'MAX_TOKENS'
 
 /** Tags wrapping the structured summary inside the landed checkpoint node. */
 const SUMMARY_OPEN_TAG = '<compacted-summary>'
@@ -81,6 +83,8 @@ export interface SummarizationInput {
   readonly tools?: readonly ToolSchema[]
   /** The derived system head, when present, followed by the shadowed region in surface order. */
   readonly messages: readonly Message[]
+  /** Positive generation cap the compaction transaction chose for this summary request. */
+  readonly maxTokens: number
 }
 
 /** Safe summary content plus the exact auxiliary call envelope recorded with it. */
@@ -155,7 +159,7 @@ export async function summarizeWithLlm(
     messages,
     toolHistory: agent.session.toolHistory(),
     ...input.tools === undefined ? {} : { tools: [...input.tools] },
-    maxTokens: config.maxTokens,
+    maxTokens: input.maxTokens,
     sessionId: agent.session.id,
     purpose: 'compaction',
     ...signal === undefined ? {} : { signal },
@@ -175,7 +179,7 @@ export async function summarizeWithLlm(
     llmStreamCall: true,
     provider: options.provider,
     model: options.model,
-    maxTokens: config.maxTokens,
+    maxTokens: input.maxTokens,
     ...(assembler.usage === undefined ? {} : { usage: assembler.usage }),
   }
 }
@@ -200,11 +204,8 @@ function finishError(finish: FinishReason): Error | undefined {
     case 'aborted': {
       return new LlmError(finish.failure.message, finish.failure.code, finish.failure)
     }
-    case 'max-tokens': {
-      const error = new Error('summarization truncated at the token cap (incomplete checkpoint)') as Error & { code?: string }
-      error.code = 'MAX_TOKENS'
-      return error
-    }
+    case 'max-tokens':
+      return new LlmError('summarization truncated at the token cap (incomplete checkpoint)', SUMMARY_TRUNCATED_CODE)
     default:
       return undefined
   }

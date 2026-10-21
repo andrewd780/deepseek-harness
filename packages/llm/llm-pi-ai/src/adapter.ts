@@ -13,6 +13,15 @@
  * way down: switching models mid-reply takes effect on the next step, never
  * inside the one in flight.
  *
+ * The one value that outlives a snapshot is the context window an Ollama
+ * server was observed serving a model with ({@link ServedContextTracker}):
+ * model-info lookups probe for it, and a prepared call captures the value
+ * learned so far. A served window smaller than the configured one is the
+ * window this adapter reports, gives pi-ai for its output clamp and
+ * usage-based overflow detection, and refuses requests that exceed it, as
+ * `CONTEXT_WINDOW_EXCEEDED`, because the server would drop their oldest
+ * messages without an error.
+ *
  * A route naming a credential reference still resolves it through the harness
  * seam and passes it as the request's `apiKey` option, which pi-ai treats as
  * the highest-priority auth override — that is what keeps the fail-loud
@@ -29,6 +38,7 @@
 import type {
   Api,
   AuthContext,
+  Context,
   CredentialStore,
   Model,
   Models,
@@ -37,9 +47,11 @@ import type {
   SimpleStreamOptions,
   ThinkingLevel,
 } from '@earendil-works/pi-ai'
+import { estimateContextTokens, estimateTextTokens } from '@earendil-works/pi-ai/utils/estimate'
 import {
   attributionHeaders,
   contentHasImage,
+  CONTEXT_WINDOW_EXCEEDED_CODE,
   LlmAdapter,
   LlmError,
   ReasoningEffortId,
@@ -61,6 +73,7 @@ import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import type { ResolvedPiAiProviderProfile } from './config.ts'
 import { toPiContext } from './context.ts'
 import { conversationUpdates, createModels, getSupportedThinkingLevels } from './models.ts'
+import type { ServedContextTracker } from './served-context.ts'
 import { toStreamChunks } from './stream.ts'
 
 /**
@@ -112,7 +125,17 @@ export interface PiAiAdapterOptions {
    * conversion because its stored replay state is unusable by this build.
    */
   onReplayDegrade?: (detail: { provider: string; model: string; reason: string }) => void
+  /** Learns the windows Ollama servers serve on probed routes; absent, no route is probed. */
+  servedContext?: ServedContextTracker
+  /**
+   * Observe a served window smaller than the configured one, once per route,
+   * model, and pair of windows.
+   */
+  onServedContextNarrowed?: (detail: { provider: string; model: string; configured: number; served: number }) => void
 }
+
+/** The served window a stream uses: the one its prepared call captured, or the one learned when it starts. */
+type ServedWindow = 'learned' | { readonly served: number | undefined }
 
 /** The two auth injectables a pi-ai collection is built with. */
 export interface PiAiAuthInjection {
@@ -212,6 +235,40 @@ function reasoningInfo(
   }
 }
 
+/**
+ * Request size by pi-ai's own estimate, four characters per token, over the
+ * system prompt, the messages, and the tool declarations. The messages carry
+ * no provider usage (replayed history records none), so pi-ai does not anchor
+ * the estimate on a reported count.
+ */
+function estimateRequestTokens(context: Context): number {
+  const tools = context.tools === undefined || context.tools.length === 0
+    ? 0
+    : estimateTextTokens(JSON.stringify(context.tools))
+  return estimateTextTokens(context.systemPrompt ?? '') + estimateContextTokens(context.messages).tokens + tools
+}
+
+/**
+ * Refuse a request its endpoint's served window cannot hold. A served window
+ * is known only for a server that would drop the request's oldest messages
+ * without an error, so the refusal is the only signal compaction gets.
+ * @param context - the converted request.
+ * @param served - the window the endpoint serves, when known.
+ * @param provider - route key for the failure message.
+ * @param model - model id for the failure message.
+ * @throws LlmError `CONTEXT_WINDOW_EXCEEDED` when the estimate exceeds `served`.
+ */
+function assertFitsServedWindow(context: Context, served: number | undefined, provider: string, model: string): void {
+  if (served === undefined) return
+  const needed = estimateRequestTokens(context)
+  if (needed <= served) return
+  throw new LlmError(
+    `pi-ai route "${provider}" model "${model}": the request needs about ${needed} tokens,`
+    + ` but its endpoint serves a ${served}-token context window`,
+    CONTEXT_WINDOW_EXCEEDED_CODE,
+  )
+}
+
 /** Merge deployment headers while removing case-insensitive attribution collisions. */
 function requestHeaders(headers: Readonly<Record<string, string>> | undefined): Record<string, string> {
   const attribution = attributionHeaders()
@@ -229,6 +286,8 @@ function requestHeaders(headers: Readonly<Record<string, string>> | undefined): 
  */
 export class PiAiAdapter extends LlmAdapter {
   private snapshot: PiAiSnapshot | undefined
+  /** Narrowings already reported, keyed by route, model, and both windows. */
+  private readonly narrowed = new Set<string>()
 
   constructor(private readonly config: PiAiAdapterOptions) {
     super()
@@ -297,18 +356,39 @@ export class PiAiAdapter extends LlmAdapter {
     })
   }
 
-  override resolveModel(
+  override async resolveModel(
     provider: string,
     model: string,
-    _signal?: AbortSignal,
+    signal?: AbortSignal,
   ): Promise<LlmResolvedModelInfo> {
-    return Promise.resolve().then(() => {
-      const snapshot = this.current()
-      return this.modelInfo(snapshot, provider, model)
-    })
+    const snapshot = this.current()
+    const profile = this.profileOf(snapshot, provider)
+    // An unknown model fails before its endpoint is probed.
+    this.modelOf(snapshot, provider, model)
+    const served = await this.config.servedContext?.observe(profile, model, signal)
+    return this.modelInfo(snapshot, provider, model, served)
   }
 
-  private modelInfo(snapshot: PiAiSnapshot, provider: string, model: string): LlmResolvedModelInfo {
+  /**
+   * The window to report and enforce: the configured one, or a smaller one
+   * the endpoint serves, whose first use per pair of windows is reported.
+   */
+  private effectiveWindow(provider: string, model: string, configured: number, served: number | undefined): number {
+    if (served === undefined || served >= configured) return configured
+    const key = `${provider}\u0000${model}\u0000${configured}\u0000${served}`
+    if (!this.narrowed.has(key)) {
+      this.narrowed.add(key)
+      this.config.onServedContextNarrowed?.({ provider, model, configured, served })
+    }
+    return served
+  }
+
+  private modelInfo(
+    snapshot: PiAiSnapshot,
+    provider: string,
+    model: string,
+    served: number | undefined,
+  ): LlmResolvedModelInfo {
     const profile = this.profileOf(snapshot, provider)
     const resolvedModel = this.modelOf(snapshot, provider, model)
     const defaultLevel = describableReasoningLevel(resolvedModel, profile.reasoning)
@@ -320,7 +400,7 @@ export class PiAiAdapter extends LlmAdapter {
       id: model,
       name: resolvedModel.name,
       inputModalities: [...resolvedModel.input],
-      context: { contextWindow: resolvedModel.contextWindow },
+      context: { contextWindow: this.effectiveWindow(provider, model, resolvedModel.contextWindow, served) },
       ...configuredMaxTokens === undefined ? {} : { defaultMaxTokens: configuredMaxTokens },
       ...reasoningInfo(resolvedModel, defaultLevel),
       ...conversationUpdates(resolvedModel),
@@ -329,19 +409,21 @@ export class PiAiAdapter extends LlmAdapter {
 
   override prepareCall(provider: string, model: string, _signal?: AbortSignal): Promise<PreparedAdapterCall> {
     const snapshot = this.current()
+    const served = this.config.servedContext?.learned(this.profileOf(snapshot, provider), model)
     return Promise.resolve({
-      model: this.modelInfo(snapshot, provider, model),
-      stream: options => this.streamWithSnapshot(options, snapshot),
+      model: this.modelInfo(snapshot, provider, model, served),
+      stream: options => this.streamWithSnapshot(options, snapshot, { served }),
     })
   }
 
   stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-    return this.streamWithSnapshot(options, this.current())
+    return this.streamWithSnapshot(options, this.current(), 'learned')
   }
 
   private async * streamWithSnapshot(
     options: GenerateOptions,
     snapshot: PiAiSnapshot,
+    window: ServedWindow,
   ): AsyncIterable<StreamChunk> {
     if (options.stop !== undefined) {
       throw new LlmError('llm-pi-ai does not support GenerateOptions.stop', 'UNSUPPORTED_OPTION')
@@ -353,6 +435,8 @@ export class PiAiAdapter extends LlmAdapter {
     // the one it started with and the next call picks up the new one.
     const profile = this.profileOf(snapshot, options.provider)
     const model = this.modelOf(snapshot, options.provider, options.model)
+    const served = window === 'learned' ? this.config.servedContext?.learned(profile, options.model) : window.served
+    const contextWindow = this.effectiveWindow(options.provider, options.model, model.contextWindow, served)
     const updates = conversationUpdates(model)
     // pi-ai collapses Anthropic tool updates without an initially active declaration.
     const tools = options.tools ?? []
@@ -399,7 +483,9 @@ export class PiAiAdapter extends LlmAdapter {
             maxBytes: profile.requestImageMaxBytes,
           },
         }, onReplayDegrade)
-      const events = snapshot.models.streamSimple(model, context, {
+      assertFitsServedWindow(context, served, options.provider, options.model)
+      const requestModel = contextWindow === model.contextWindow ? model : { ...model, contextWindow }
+      const events = snapshot.models.streamSimple(requestModel, context, {
         ...profileOptions(profile, reasoning, apiKey),
         ...options.temperature === undefined ? {} : { temperature: options.temperature },
         ...options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens },
@@ -409,7 +495,7 @@ export class PiAiAdapter extends LlmAdapter {
         // Harness-owned and therefore win collisions.
         headers: requestHeaders(profile.headers),
       })
-      const iterator = toStreamChunks(events, model.contextWindow, options.signal, model.id)[Symbol.asyncIterator]()
+      const iterator = toStreamChunks(events, contextWindow, options.signal, model.id)[Symbol.asyncIterator]()
       let exhausted = false
       try {
         while (true) {

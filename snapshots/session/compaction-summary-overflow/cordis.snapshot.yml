@@ -1,0 +1,31 @@
+# Keyless overflow replay. The route declares a 262,144-token window, so
+# shipped compaction defaults cap the first summary request at 65,536 tokens.
+# The scripted endpoint serves 8,192 tokens: it rejects the conversation
+# request, that summary request, and the next one capped at the span's price;
+# folds within half that span then fit.
+
+- id: agent-instructions
+  disabled: true
+
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek-api-key'
+  disabled: true
+
+- id: session-persistence-jsonl
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: !!js dshHomePath('sessions')
+    compression: none
+
+- insert:
+    - id: llm-replay
+      name: '@deepseek-ai/dsh-llm-replay'
+      config:
+        providers:
+          - id: deepseek-official
+            name: DeepSeek
+            models:
+              - id: deepseek-v4-flash
+                contextWindow: 262144
+    - id: compaction-working-directory
+      name: '../../../packages/test-support/session-snapshot/tests/fixtures/compaction-working-directory.ts'

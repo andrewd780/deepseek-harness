@@ -1,0 +1,22 @@
+# Bilingual-pair consistency record for 2026-10-19-overflow-summary-folding.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-10-19-overflow-summary-folding.md
+/agent-note-overflow-recovery-folds-a-summary-the-provider-rejects:
+  en: f6a511c51876cd9f
+  zh: 64af0bf5c5debc0f
+/agent-note-overflow-recovery-folds-a-summary-the-provider-rejects/problem:
+  en: 67e41e463c4e15b4
+  zh: 4047ba2678e76137
+/agent-note-overflow-recovery-folds-a-summary-the-provider-rejects/decision:
+  en: f829f346afea05eb
+  zh: 40c898011d098623
+/agent-note-overflow-recovery-folds-a-summary-the-provider-rejects/alternatives-considered:
+  en: 653a83dc47fd876a
+  zh: 5d5741c032653b3e
+/agent-note-overflow-recovery-folds-a-summary-the-provider-rejects/consequences:
+  en: 94fc9d74df059c58
+  zh: d8ccab987bfb5655
+/agent-note-overflow-recovery-folds-a-summary-the-provider-rejects/testing:
+  en: 20670d27c47e50da
+  zh: 0ebbcc2ffee4179e

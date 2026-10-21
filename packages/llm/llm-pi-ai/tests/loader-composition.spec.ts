@@ -162,6 +162,39 @@ describe('llm-pi-ai real dormant composition', () => {
     expect(server.headers[0]?.['user-agent']).toBe(userAgent())
   })
 
+  it('learns the window an Ollama endpoint serves for a declared route with no capacity fields', async () => {
+    vi.stubEnv('PI_COMPOSITION_KEY', '')
+    const server = await mockServer([{ events: textEvents }], {
+      processListing: {
+        body: JSON.stringify({ models: [{ name: 'qwen3:32b', model: 'qwen3:32b', context_length: 32_768 }] }),
+      },
+    })
+    const { ctx, settingsPath } = await loadComposition()
+
+    await writeFile(settingsPath, [
+      '- id: llm-pi-ai',
+      '  config:',
+      '    providers:',
+      '      local-ollama:',
+      '        apiKeyEnv: PI_COMPOSITION_KEY',
+      '        api: openai-completions',
+      `        baseURL: ${server.url}/v1`,
+      '        models:',
+      '          - id: qwen3:32b',
+      '',
+    ].join('\n'))
+    await vi.waitFor(() => {
+      expect(ctx.llm.listProviders().map(provider => provider.id)).toEqual(['local-ollama'])
+    }, { timeout: 5000 })
+
+    // Without the probe the blank window would resolve to pi-ai's 262,144-token default.
+    await expect(ctx.llm.resolveModelInfo('local-ollama', 'qwen3:32b'))
+      .resolves.toMatchObject({ context: { contextWindow: 32_768 } })
+    await assemble(ctx, { provider: 'local-ollama', model: 'qwen3:32b', maxTokens: 30_000, messages: [] })
+    expect(server.requests[0]).toMatchObject({ max_completion_tokens: 32_768 - 4_096 })
+    expect(server.probes[0]?.authorization).toBe('Bearer key-from-store')
+  })
+
   it('continues natively after max-token assembly drops a tool call, with pruned replay metadata', async () => {
     vi.stubEnv('PI_COMPOSITION_KEY', '')
     const server = await mockServer([

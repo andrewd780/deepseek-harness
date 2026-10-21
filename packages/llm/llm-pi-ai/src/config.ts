@@ -24,6 +24,7 @@ import type { ResolvedRetryPolicy, RetryPolicyConfig } from '@deepseek-ai/dsh-ll
 import { deepEqualJson } from '@deepseek-ai/dsh-util-values'
 import {
   CACHE_CONTROL_FORMATS,
+  catalogProviderIds,
   CHAT_TEMPLATE_VARS,
   MAX_TOKENS_FIELDS,
   MODALITIES,
@@ -41,10 +42,19 @@ import type {
   PiAiReasoningEfforts,
   RouteCatalog,
 } from './catalog.ts'
+import { endpointRoot, LISTABLE_PROTOCOLS } from './endpoint.ts'
 import { buildProvider, supportedProtocols } from './provider.ts'
+import type { ServedContextProbe } from './served-context.ts'
 
 /** Default maximum idle interval while an adapter stream read is outstanding. */
 export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
+
+/**
+ * Default bound on one served-context probe. Ollama answers its process
+ * listing from memory, so the bound matters only for an endpoint that does not
+ * answer, where it limits the delay each model-info lookup adds.
+ */
+export const DEFAULT_SERVED_CONTEXT_PROBE_TIMEOUT_MS = 5_000
 
 /**
  * Default request-level bound on base64-encoded image payload. Every image in
@@ -165,6 +175,17 @@ export interface PiAiProviderProfile {
   /** Maximum provider idle time while one stream read is outstanding. */
   streamIdleTimeoutMs?: number
   /**
+   * Whether a declared route — one the installed catalog does not ship — with
+   * a `baseURL` and an OpenAI or Anthropic protocol learns the context window
+   * an Ollama server serves from its process listing, `GET {root}/api/ps`
+   * (default `auto`). A learned window below the configured one replaces it,
+   * and a request too large for it fails as `CONTEXT_WINDOW_EXCEEDED` instead
+   * of being truncated by the server. `off` sends no probe.
+   */
+  servedContextProbe?: 'auto' | 'off'
+  /** Bound on one served-context probe in milliseconds (default 5,000). */
+  servedContextProbeTimeoutMs?: number
+  /**
    * Maximum base64-encoded image payload per request. When a request's
    * accumulated images exceed it, the oldest images are replaced by text
    * placeholders until the request fits, so a long session keeps completing
@@ -183,8 +204,10 @@ export interface PiAiProviderProfile {
 }
 
 /** Validated profile with its route stamped and every adapter-owned default resolved. */
-export interface ResolvedPiAiProviderProfile
-  extends Omit<PiAiProviderProfile, 'apiKeyEnv' | 'retryPolicy' | 'models' | 'displayName'> {
+export interface ResolvedPiAiProviderProfile extends Omit<
+  PiAiProviderProfile,
+  'apiKeyEnv' | 'retryPolicy' | 'models' | 'displayName' | 'servedContextProbe' | 'servedContextProbeTimeoutMs'
+> {
   /** Harness route key and the `Models` collection key (the configuration dict key). */
   provider: string
   /** Resolved display name for selectors and configuration surfaces. */
@@ -193,6 +216,8 @@ export interface ResolvedPiAiProviderProfile
   apiKeyEnv?: CredentialRef
   /** Positive finite provider-idle interval after defaulting. */
   streamIdleTimeoutMs: number
+  /** Where to learn the window an Ollama server serves; absent when the route is not probed. */
+  servedContextProbe?: ServedContextProbe
   /** Positive request-level base64 image payload bound after defaulting. */
   maxRequestImageBytes: number
   /** Positive total-pixel request-version budget after defaulting. */
@@ -342,6 +367,9 @@ const profile = z.object({
   timeoutMs: z.natural(),
   websocketConnectTimeoutMs: z.natural(),
   streamIdleTimeoutMs: z.number().min(Number.MIN_VALUE).max(MAX_TIMER_DELAY_MS).default(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
+  servedContextProbe: z.union(['auto', 'off']).default('auto'),
+  servedContextProbeTimeoutMs: z.number().min(Number.MIN_VALUE).max(MAX_TIMER_DELAY_MS)
+    .default(DEFAULT_SERVED_CONTEXT_PROBE_TIMEOUT_MS),
   maxRequestImageBytes: z.number().step(1).min(1).default(DEFAULT_MAX_REQUEST_IMAGE_BYTES),
   requestImagePixelBudget: z.number().step(1).min(1).default(DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET),
   requestImageMaxBytes: z.number().step(1).min(1).default(DEFAULT_REQUEST_IMAGE_MAX_BYTES),
@@ -400,6 +428,27 @@ function assertValidHeaders(provider: string, headers: Readonly<Record<string, s
 }
 
 /**
+ * The served-context probe one route gets. Only a declared route — one the
+ * installed catalog does not ship, so its endpoint may be a self-hosted
+ * server — with a `baseURL` and a protocol whose endpoint can be addressed is
+ * probed, unless its profile turns probing off.
+ * @param provider - the route key.
+ * @param source - the route's configured profile.
+ * @param timeoutMs - the validated probe bound.
+ * @returns the probe, or `undefined` when the route is not probed.
+ */
+function servedContextProbeOf(
+  provider: string,
+  source: PiAiProviderProfile,
+  timeoutMs: number,
+): ServedContextProbe | undefined {
+  const { api, baseURL } = source
+  if (source.servedContextProbe === 'off' || api === undefined || baseURL === undefined
+    || !LISTABLE_PROTOCOLS.has(api) || catalogProviderIds().includes(provider)) return undefined
+  return { url: `${endpointRoot(baseURL)}/api/ps`, api, timeoutMs }
+}
+
+/**
  * Resolve scalar defaults and materialize each route's serviceable models.
  * Deferred catalog validation retains diagnostics without deleting configured
  * routes. An omitted dict resolves to the empty, dormant route set.
@@ -433,6 +482,18 @@ export function resolveProfiles(
       throw new Error(
         `llm-pi-ai: provider "${provider}" streamIdleTimeoutMs must be a positive finite number no greater than ${MAX_TIMER_DELAY_MS}`,
       )
+    }
+    const servedContextProbeTimeoutMs = source.servedContextProbeTimeoutMs ?? DEFAULT_SERVED_CONTEXT_PROBE_TIMEOUT_MS
+    if (!Number.isFinite(servedContextProbeTimeoutMs)
+      || servedContextProbeTimeoutMs <= 0
+      || servedContextProbeTimeoutMs > MAX_TIMER_DELAY_MS) {
+      throw new Error(
+        `llm-pi-ai: provider "${provider}" servedContextProbeTimeoutMs must be a positive finite number no greater than ${MAX_TIMER_DELAY_MS}`,
+      )
+    }
+    const probeSetting: unknown = source.servedContextProbe
+    if (probeSetting !== undefined && probeSetting !== 'auto' && probeSetting !== 'off') {
+      throw new Error(`llm-pi-ai: provider "${provider}" servedContextProbe must be "auto" or "off"`)
     }
     const maxRequestImageBytes = source.maxRequestImageBytes ?? DEFAULT_MAX_REQUEST_IMAGE_BYTES
     if (!Number.isInteger(maxRequestImageBytes) || maxRequestImageBytes <= 0) {
@@ -487,13 +548,23 @@ export function resolveProfiles(
       if (validation === 'strict' || !(error instanceof PiAiCatalogError)) throw error
       catalogError ??= error.message
     }
-    const { apiKeyEnv, retryPolicy, models: _models, displayName: _displayName, ...rest } = source
+    const {
+      apiKeyEnv,
+      retryPolicy,
+      models: _models,
+      displayName: _displayName,
+      servedContextProbe: _servedContextProbe,
+      servedContextProbeTimeoutMs: _servedContextProbeTimeoutMs,
+      ...rest
+    } = source
+    const servedContextProbe = servedContextProbeOf(provider, source, servedContextProbeTimeoutMs)
     resolved.set(provider, {
       ...rest,
       provider,
       displayName,
       ...apiKeyEnv === undefined ? {} : { apiKeyEnv: credentialRef(apiKeyEnv) },
       streamIdleTimeoutMs,
+      ...servedContextProbe === undefined ? {} : { servedContextProbe },
       maxRequestImageBytes,
       requestImagePixelBudget,
       requestImageMaxBytes,

@@ -104,6 +104,7 @@
     "@deepseek-ai/dsh-experimental-session-titles-bundle": "workspace:*",
     "@deepseek-ai/dsh-experimental-terminal-bundle": "workspace:*",
     "@deepseek-ai/dsh-experimental-session-search": "workspace:*",
+    "@deepseek-ai/dsh-experimental-self-improve": "workspace:*",
     "@deepseek-ai/dsh-experimental-tool-worktree": "workspace:*"
   },
   "devDependencies": {

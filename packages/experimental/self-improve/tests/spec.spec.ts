@@ -42,8 +42,26 @@ describe('resolveRunSpec', () => {
     expect(spec.settings).toMatchObject({
       rounds: 20, variants: 2, trials: 2, minEdits: 1, maxEdits: 4, stallWindow: 3, reservedSlots: 1, pruneWindow: 4,
       repairRounds: 5, failureTraces: 30, successTraces: 6, maxMissingFraction: 0.2, historyLimit: 40, delta: undefined,
-      selection: { costAllowance: 0.1, costPerGain: 44.5, scoreWeight: 0, costWeight: 15, noveltyWeight: 0.5 },
+      selection: {
+        costAllowance: 0.1,
+        costPerGain: { value: 0.25, perPass: true },
+        scoreWeight: { value: 0, perPass: true },
+        costWeight: 15,
+        noveltyWeight: 0.5,
+      },
     })
+  })
+
+  it('takes each rate per unit of score or per passing trial, never both', () => {
+    expect(resolved({ ...minimal, selection: { costPerPass: 0.1, scoreWeight: 3 } }).spec.settings.selection).toMatchObject({
+      costPerGain: { value: 0.1, perPass: true },
+      scoreWeight: { value: 3, perPass: false },
+    })
+    const both = { costPerGain: 2, costPerPass: 0.1, scoreWeight: 1, scoreWeightPerPass: 1 }
+    expect(resolved({ ...minimal, selection: both }).problems).toEqual([
+      'selection.costPerGain and selection.costPerPass must not both be set',
+      'selection.scoreWeight and selection.scoreWeightPerPass must not both be set',
+    ])
   })
 
   it('takes explicit values', () => {
@@ -59,7 +77,7 @@ describe('resolveRunSpec', () => {
     })
     expect(problems).toEqual([])
     expect(spec).toMatchObject({ branch: 'evolve/x', repository: '/repo', trial: { forwardEnv: ['DEEPSEEK_API_KEY'], env: { DSH_TELEMETRY_DISABLED: '1' }, maxPromptGrowth: 0.1 } })
-    expect(spec.settings).toMatchObject({ delta: 0.02, rounds: 5, selection: { costPerGain: 2 } })
+    expect(spec.settings).toMatchObject({ delta: 0.02, rounds: 5, selection: { costPerGain: { value: 2, perPass: false } } })
     expect(spec.calibration.seed).toBe(0)
   })
 

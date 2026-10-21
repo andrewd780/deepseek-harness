@@ -39,8 +39,8 @@ import { renderEvidence, selectTraces } from './evidence.ts'
 import { exploration, stallFlag } from './history.ts'
 import type { EditRecord, ExplorationDirective, GateOutcome, PruneEntry } from './history.ts'
 import { editBudget } from './schedule.ts'
-import { selectRound } from './selection.ts'
-import type { Candidate, CandidateEdit, Decision, SelectionPolicy } from './selection.ts'
+import { resolveSelectionPolicy, selectRound } from './selection.ts'
+import type { Candidate, CandidateEdit, Decision, SelectionSettings } from './selection.ts'
 import type {
   Analyst,
   CandidateCheckout,
@@ -84,7 +84,8 @@ export interface RunSettings {
   readonly historyLimit: number
   /** δ; `undefined` reads the run's calibration. */
   readonly delta: number | undefined
-  readonly selection: Omit<SelectionPolicy, 'delta'>
+  /** Selection constants; per-pass rates scale with the evolve tasks × `trials` of each evaluation. */
+  readonly selection: SelectionSettings
 }
 
 /** The roles one run composes. */
@@ -250,9 +251,9 @@ export class SelfImproveRun {
     await store.advance(incumbent.commit, signal)
     const incumbentEvaluation = await this.requireEvaluation(incumbent.job)
     const delta = await this.noiseBand()
-    const policy: SelectionPolicy = { ...settings.selection, delta }
     const bestScore = Math.max(...trajectory.map(entry => entry.score))
     const tasks = domain.evolveTasks()
+    const policy = resolveSelectionPolicy(settings.selection, tasks.length * settings.trials, delta)
 
     const references = selectTraces(incumbentEvaluation.perTask, settings.failureTraces, settings.successTraces)
     const evidence = await renderEvidence(domain, incumbent.job, references, signal)
@@ -275,6 +276,7 @@ export class SelfImproveRun {
       prune,
       delta,
       bestScore,
+      policy,
     })
     log(`round ${round}: incumbent ${incumbent.commit} score ${incumbent.score.toFixed(4)}, budget ${budget}, stalled ${stalled}, reserved ${directive.reservedSlots}`)
 

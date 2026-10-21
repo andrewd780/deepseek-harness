@@ -30,7 +30,13 @@ const settings: RunSettings = {
   maxMissingFraction: 0.25,
   historyLimit: 40,
   delta: 0.05,
-  selection: { costAllowance: 0.1, costPerGain: 2, scoreWeight: 0, costWeight: 15, noveltyWeight: 0.5 },
+  selection: {
+    costAllowance: 0.1,
+    costPerGain: { value: 2, perPass: false },
+    scoreWeight: { value: 0, perPass: false },
+    costWeight: 15,
+    noveltyWeight: 0.5,
+  },
 }
 
 class FlakyDirectory extends RunDirectory {
@@ -107,8 +113,29 @@ describe('SelfImproveRun rounds', () => {
     expect(domain.smokes.map(request => [request.job, request.trials])).toEqual([['r0A-smoke-cr0A-1', 1], ['r0B-smoke-cr0B-2', 1]])
     expect(store.released).toEqual(['baseline', 'r0A', 'r0B'])
     expect(await directory.readRoundText(0, 'decisions.json')).toContain('"variant": "A"')
-    expect(JSON.parse(await directory.readRoundText(0, 'directives.json') ?? '{}')).toMatchObject({ budget: 2, stalled: false, delta: 0.05, bestScore: 0.25 })
+    expect(JSON.parse(await directory.readRoundText(0, 'directives.json') ?? '{}')).toMatchObject({
+      budget: 2,
+      stalled: false,
+      delta: 0.05,
+      bestScore: 0.25,
+      policy: { delta: 0.05, costAllowance: 0.1, costPerGain: 2, scoreWeight: 0, costWeight: 15, noveltyWeight: 0.5 },
+    })
     expect(await run.status()).toMatchObject({ nextRound: 1 })
+  })
+
+  it('scales per-pass rates by the trials of an evaluation', async () => {
+    const { run, directory, domain } = await harness({
+      selection: { ...settings.selection, costPerGain: { value: 0.25, perPass: true }, scoreWeight: { value: 1, perPass: true } },
+    })
+    await run.baseline()
+    domain.rewards.set('r0A', { a: [1, 1], b: [0, 0] })
+    domain.tokens.set('r0A', 300)
+    const outcome = await run.round()
+    expect(JSON.parse(await directory.readRoundText(0, 'directives.json') ?? '{}')).toMatchObject({ policy: { costPerGain: 1, scoreWeight: 4 } })
+    expect(outcome.decisions[0]).toMatchObject({
+      admissible: false,
+      reason: 'cost rule failed: gain +0.2500 above band 0.05; cost change +2.0000 > allowance 0.3500',
+    })
   })
 
   it('keeps the incumbent when no candidate clears the floor, then reserves a slot once the run stalls', async () => {

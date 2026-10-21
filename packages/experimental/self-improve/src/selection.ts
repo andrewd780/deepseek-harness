@@ -34,6 +34,49 @@ export interface SelectionPolicy {
   readonly noveltyWeight: number
 }
 
+/** A selection constant per unit of score, or per passing trial. */
+export interface ScoreRate {
+  readonly value: number
+  /** Whether `value` is per passing trial, so the evaluation's trial count scales it. */
+  readonly perPass: boolean
+}
+
+/** A run's selection constants before the size of its evaluations is known. */
+export interface SelectionSettings {
+  /** β₀: relative cost increase allowed for any gain above δ. */
+  readonly costAllowance: number
+  /** β₁: relative cost increase allowed per unit of score gain above δ. */
+  readonly costPerGain: ScoreRate
+  /** w_s: within-band weight of the score change. */
+  readonly scoreWeight: ScoreRate
+  /** w_c: within-band weight of the relative cost change. */
+  readonly costWeight: number
+  /** w_n: within-band weight of novelty. */
+  readonly noveltyWeight: number
+}
+
+/**
+ * The selection constants for evaluations of `trials` trials. One passing
+ * trial moves the score by 1 / `trials`, so a per-pass rate is multiplied by
+ * `trials`: 25% more tokens per pass over 89 tasks × 2 trials is the
+ * reference coding instance's β₁ of 44.5.
+ * @param settings - the run's selection settings.
+ * @param trials - trials per evaluation: evolve tasks × trials per task.
+ * @param delta - the noise band.
+ * @returns the policy.
+ */
+export function resolveSelectionPolicy(settings: SelectionSettings, trials: number, delta: number): SelectionPolicy {
+  const perScore = (rate: ScoreRate): number => (rate.perPass ? rate.value * trials : rate.value)
+  return {
+    delta,
+    costAllowance: settings.costAllowance,
+    costPerGain: perScore(settings.costPerGain),
+    scoreWeight: perScore(settings.scoreWeight),
+    costWeight: settings.costWeight,
+    noveltyWeight: settings.noveltyWeight,
+  }
+}
+
 /** One candidate edit, tagged with the component it changes and why. */
 export interface CandidateEdit {
   readonly id: string

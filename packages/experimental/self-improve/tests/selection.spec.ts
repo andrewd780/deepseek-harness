@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { costRule, judgeCandidate, selectRound } from '../src/selection.ts'
+import { costRule, judgeCandidate, resolveSelectionPolicy, selectRound } from '../src/selection.ts'
 import type { Candidate } from '../src/selection.ts'
 import { evaluation, policy, componentSet } from './fixtures.ts'
 
@@ -10,6 +10,29 @@ function candidate(variant: string, rewards: Record<string, number[]>, tokens = 
   const perTaskTokens = Object.fromEntries(Object.keys(rewards).map(task => [task, [tokens, tokens]]))
   return { variant, edits: [{ ...edit, component }], evaluation: evaluation(`r0${variant}`, rewards, perTaskTokens) }
 }
+
+describe('resolveSelectionPolicy', () => {
+  const settings = {
+    costAllowance: 0.1,
+    costPerGain: { value: 0.25, perPass: true },
+    scoreWeight: { value: 2, perPass: false },
+    costWeight: 15,
+    noveltyWeight: 0.5,
+  }
+
+  it('reproduces the reference coding instance from 25% more tokens per pass over 89 tasks × 2 trials', () => {
+    expect(resolveSelectionPolicy(settings, 89 * 2, 0.017)).toEqual({
+      delta: 0.017, costAllowance: 0.1, costPerGain: 44.5, scoreWeight: 2, costWeight: 15, noveltyWeight: 0.5,
+    })
+  })
+
+  it('grants one extra pass on a small suite the same allowance as on the reference suite', () => {
+    const small = resolveSelectionPolicy(settings, 3, 0.3)
+    expect(small.costPerGain).toBe(0.75)
+    expect(costRule(1 / 3, 5, 0, small)).toEqual({ holds: false, reason: 'gain +0.3333 above band 0.3; cost change +5.0000 > allowance 0.3500' })
+    expect(costRule(7 / 178, 1.3, 0, resolveSelectionPolicy(settings, 178, 0.017)).holds).toBe(true)
+  })
+})
 
 describe('costRule', () => {
   it('lets a gain above the band pay for proportional cost', () => {

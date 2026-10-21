@@ -3,7 +3,11 @@
  * search roles run, and the run's constants. Omitted constants take the values
  * of the reference coding instance of regularized recursive self-improvement
  * (89 tasks, k = 2, T = 20, m = 2); `delta` has no default because the noise
- * band belongs to the suite, so a spec names a value or `"calibrate"`.
+ * band belongs to the suite, so a spec names a value or `"calibrate"`. The
+ * cost allowance per gain defaults to 25% more tokens per passing trial
+ * (`selection.costPerPass`), which is the reference's β₁ of 44.5 on its 178
+ * trials; `selection.costPerGain` sets β₁ per unit of score instead, and
+ * `scoreWeightPerPass` and `scoreWeight` set w_s the same two ways.
  *
  * ```json
  * {
@@ -29,6 +33,7 @@ import { dirname, isAbsolute, resolve } from 'node:path'
 
 import type { CalibrationSettings } from './calibrate.ts'
 import type { RunSettings } from './loop.ts'
+import type { ScoreRate } from './selection.ts'
 
 /** How each trial's runtime starts. */
 export interface TrialSpec {
@@ -143,8 +148,8 @@ export function resolveRunSpec(value: unknown, base: string, problems: string[])
     delta: typeof delta === 'number' ? delta : undefined,
     selection: {
       costAllowance: selection.number('costAllowance', 0.1),
-      costPerGain: selection.number('costPerGain', 44.5),
-      scoreWeight: selection.number('scoreWeight', 0),
+      costPerGain: selection.rate('costPerGain', 'costPerPass', 0.25),
+      scoreWeight: selection.rate('scoreWeight', 'scoreWeightPerPass', 0),
       costWeight: selection.number('costWeight', 15),
       noveltyWeight: selection.number('noveltyWeight', 0.5),
     },
@@ -242,6 +247,16 @@ class Fields {
     if (typeof value === 'number' && Number.isFinite(value)) return value
     this.problems.push(`${this.prefix}${key} must be a number`)
     return fallback
+  }
+
+  /** A rate per unit of score or per passing trial, never both; when neither is set, `fallback` per passing trial. */
+  rate(perScore: string, perPass: string, fallback: number): ScoreRate {
+    const score = this.value[perScore]
+    if (score !== undefined && this.value[perPass] !== undefined) {
+      this.problems.push(`${this.prefix}${perScore} and ${this.prefix}${perPass} must not both be set`)
+    }
+    if (score !== undefined) return { value: this.number(perScore, fallback), perPass: false }
+    return { value: this.number(perPass, fallback), perPass: true }
   }
 
   /** An integer in `[minimum, maximum]`. */

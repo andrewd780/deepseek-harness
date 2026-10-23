@@ -3,10 +3,11 @@
  * checks whether a run is due and starts the automatic pipeline when every
  * check passes.
  *
- * A run is due once the day's start time has come, no run started since
- * then, and at least `minIntervalHours` passed since the last start; with
- * `windowHours` above 0, only until that many hours after the start time.
- * A due run also needs no self-improve job running in this process, enough
+ * A run is due when no run started since the most recent start time, at
+ * least `minIntervalHours` passed since the last start, and, with
+ * `windowHours` above 0, no more than that many hours passed since the start
+ * time; a run missed at its start time is caught up later the same way,
+ * across midnight too. A due run also needs no self-improve job running in this process, enough
  * memory room, and an owner session. Memory room is the free, inactive, and
  * speculative pages `vm_stat` reports, which macOS can hand to a model load
  * without swapping. The owner is the session that turned the schedule on,
@@ -16,8 +17,9 @@
  *
  * `schedule.json` keeps the command's choices, which take precedence over
  * the plugin settings, the owner, the last start, and the last check that
- * was due but blocked, with its reason. Checks hold the file's lock without
- * waiting, so two processes never start the same day's run.
+ * was due but blocked, with its reason. A check reads nothing more while the
+ * schedule is off; otherwise it holds the file's lock without waiting, so two
+ * processes never start the same day's run.
  *
  * @module @deepseek-ai/dsh-experimental-self-improve/auto-schedule
  */
@@ -82,6 +84,8 @@ export interface SchedulerDependencies {
 const TIME = /^([01]\d|2[0-3]):([0-5]\d)$/
 const HOUR_MS = 3_600_000
 const GIB = 2 ** 30
+/** How long a command waits for a check, which can hold the lock through `vm_stat` and the start of a run. */
+const UPDATE_WAIT_MS = 60_000
 const NO_OWNER = 'waiting: no session owns the schedule; run /self-improve schedule on in the session that should own scheduled runs'
 
 /**
@@ -94,9 +98,10 @@ export function isScheduleTime(text: string): boolean {
 }
 
 /**
- * Whether a run is due at `now` by the clock alone.
+ * Whether a run is due at `now` by the clock alone, measured from the most recent start time at or before `now`.
  * @param input - the time, the schedule's start time and limits, and the last start.
  * @returns due, or the reason it is not.
+ * @throws Error when `time` is not `HH:MM`.
  */
 export function dueCheck(input: {
   readonly now: Date
@@ -110,11 +115,15 @@ export function dueCheck(input: {
   if (match === null) throw new Error(`self-improve schedule time ${JSON.stringify(time)} is not HH:MM`)
   const slot = new Date(now)
   slot.setHours(Number(match[1]), Number(match[2]), 0, 0)
-  if (now < slot) return { due: false, reason: `waiting for ${time}` }
-  if (input.windowHours > 0 && now.getTime() >= slot.getTime() + input.windowHours * HOUR_MS) {
-    return { due: false, reason: `today's window, ${time} plus ${input.windowHours} h, has passed` }
+  if (now < slot) slot.setDate(slot.getDate() - 1)
+  const next = new Date(slot)
+  next.setDate(next.getDate() + 1)
+  if (lastStartedAt !== undefined && lastStartedAt >= slot) {
+    return { due: false, reason: `already started at ${localTime(lastStartedAt)}; the next start time is ${localTime(next)}` }
   }
-  if (lastStartedAt !== undefined && lastStartedAt >= slot) return { due: false, reason: `already started today at ${localTime(lastStartedAt)}` }
+  if (input.windowHours > 0 && now.getTime() >= slot.getTime() + input.windowHours * HOUR_MS) {
+    return { due: false, reason: `the ${input.windowHours} h window after ${localTime(slot)} has passed; the next start time is ${localTime(next)}` }
+  }
   if (lastStartedAt !== undefined && now.getTime() - lastStartedAt.getTime() < input.minIntervalHours * HOUR_MS) {
     return { due: false, reason: `the last start, ${localTime(lastStartedAt)}, is less than ${input.minIntervalHours} h ago` }
   }
@@ -211,6 +220,7 @@ export class AutoScheduler {
     if (this.checking) return { started: false, reason: 'the previous check is still running' }
     this.checking = true
     try {
+      if (!this.enabled(await readScheduleState(this.deps.statePath))) return { started: false, reason: 'the schedule is off' }
       await mkdir(dirname(this.deps.statePath), { recursive: true, mode: 0o700 })
       return await withFileLock(this.deps.statePath, async () => await this.check(), { waitMs: 0 })
     } catch (error) {
@@ -338,7 +348,7 @@ export class AutoScheduler {
       const after = change(before)
       if (after !== before) await this.write(after)
       return after
-    })
+    }, { waitMs: UPDATE_WAIT_MS })
   }
 
   private async write(state: ScheduleState): Promise<void> {

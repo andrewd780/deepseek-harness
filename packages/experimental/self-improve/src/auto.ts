@@ -22,7 +22,7 @@ import { join } from 'node:path'
 
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 
-import { applyEvolved } from './apply.ts'
+import { applyEvolved, undoneCommits } from './apply.ts'
 import type { ApplyResult, LiveConfiguration } from './apply.ts'
 import { RUN_SPEC_FILE } from './bootstrap.ts'
 import type { OpenedRun } from './command.ts'
@@ -146,6 +146,19 @@ export async function latestAccepted(opened: OpenedRun): Promise<Revision | unde
 }
 
 /**
+ * Where the generation after a finished one starts: the finished generation's evolve branch, or its baseline when
+ * its result was undone, so no generation builds on an undone result.
+ * @param opened - the finished generation.
+ * @param undone - the revisions whose newest apply was undone.
+ * @returns a git revision.
+ */
+export async function nextStartPoint(opened: OpenedRun, undone: ReadonlySet<string>): Promise<string> {
+  const trajectory = await opened.directory.readTrajectory()
+  if (trajectory === undefined || !undone.has(latest(trajectory).commit)) return opened.spec.branch
+  return trajectory[0].commit
+}
+
+/**
  * Write one revision's evolved directory into the live configuration.
  * @param opened - the run holding the revision.
  * @param commit - the revision.
@@ -164,7 +177,7 @@ export async function applyRevision(
 ): Promise<ApplyResult> {
   const checkout = await opened.store.create('apply', commit, signal)
   try {
-    return await applyEvolved({ evolved: checkout.evolvedDirectory, description: `run ${opened.spec.name} at ${commit}` }, live, now)
+    return await applyEvolved({ evolved: checkout.evolvedDirectory, description: `run ${opened.spec.name} at ${commit}`, commit }, live, now)
   } finally {
     await opened.store.release('apply', signal)
   }
@@ -205,27 +218,43 @@ export async function runPipeline(options: PipelineOptions): Promise<string> {
   const before = final.commit === base.commit ? after : await run.heldout(0, signal)
   log('stage 5/5, apply')
   const applied = await applyStage(opened, options.apply, base, final, signal)
-  log(applied)
-  const summary = await summarize(opened, trajectory, { before: before.score, after: after.score, tasks: after.perTask.size }, applied)
-  const record: AutoRecord = { completedAt: new Date().toISOString(), summary, applied }
-  await writeFileAtomic(join(directory.root, RECORD_FILE), `${JSON.stringify(record, undefined, 1)}\n`, { mode: 0o600, dirMode: 0o700 })
+  log(applied.line)
+  const summary = await summarize(opened, trajectory, { before: before.score, after: after.score, tasks: after.perTask.size }, applied.line)
+  // A generation whose apply failed stays unfinished, so the next pipeline retries the apply before moving on.
+  if (applied.finished) {
+    const record: AutoRecord = { completedAt: new Date().toISOString(), summary, applied: applied.line }
+    await writeFileAtomic(join(directory.root, RECORD_FILE), `${JSON.stringify(record, undefined, 1)}\n`, { mode: 0o600, dirMode: 0o700 })
+  }
   return summary
 }
 
-/** Apply the final incumbent when it is an accepted candidate; returns the summary's line. */
-async function applyStage(opened: OpenedRun, apply: AutoApply, base: Revision, final: Revision, signal: AbortSignal): Promise<string> {
-  if (final.commit === base.commit) return 'Not applied: no candidate beat the baseline, so your configuration is unchanged.'
-  if (!apply.enabled) return 'Not applied: autoApply is off. Run /self-improve apply to apply it.'
+/** Apply the final incumbent when it is an accepted candidate; returns the summary's line and whether the generation finished. */
+async function applyStage(
+  opened: OpenedRun,
+  apply: AutoApply,
+  base: Revision,
+  final: Revision,
+  signal: AbortSignal,
+): Promise<{ readonly line: string; readonly finished: boolean }> {
+  if (final.commit === base.commit) return { line: 'Not applied: no candidate beat the baseline, so your configuration is unchanged.', finished: true }
+  if (!apply.enabled) return { line: 'Not applied: autoApply is off. Run /self-improve apply to apply it.', finished: true }
   let result: ApplyResult
   try {
+    if ((await undoneCommits(apply.live)).has(final.commit)) {
+      return { line: 'Not applied: you undid this result with /self-improve undo. Run /self-improve apply to apply it anyway.', finished: true }
+    }
     result = await applyRevision(opened, final.commit, apply.live, apply.now(), signal)
   } catch (error) {
     signal.throwIfAborted()
     // Every failure here is a refusal, a filesystem Error, or a git command's Error.
-    return `Not applied: ${(error as Error).message}`
+    return { line: `Not applied: ${(error as Error).message}\nFix that and run /self-improve again; it retries the apply before the next generation starts.`, finished: false }
   }
-  if (result.status === 'unchanged') return 'Already applied: your configuration holds this result.'
-  return `Applied to your dsh configuration: ${result.changed.join(', ')}. New sessions use it. Undo with /self-improve undo, which restores the backup in ${result.backup}.`
+  if (result.status === 'unchanged') return { line: 'Already applied: your configuration holds this result.', finished: true }
+  const overlay = result.overlay.length === 0 ? '' : ` Overlay entries: ${result.overlay.join(', ')}.`
+  return {
+    line: `Applied to your dsh configuration: ${result.changed.join(', ')}.${overlay} New sessions use it. Undo with /self-improve undo, which restores the backup in ${result.backup}.`,
+    finished: true,
+  }
 }
 
 async function summarize(

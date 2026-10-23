@@ -97,8 +97,8 @@ export interface Config {
   }
   /** The Harness home that applies write `AGENTS.md` and `skills/` into, holding the plugin's state; empty is the running profile's. */
   home?: string
-  /** The profile patch that applies add overlay entries to; empty is the running profile's `cordis.patch.yml`, else `<home>`'s. */
-  profilePatch?: string
+  /** The patch layer that applies add overlay entries to; empty is `<home>/cordis.patch.yml`, which every profile applies last. */
+  overlayPatch?: string
 }
 
 /** Configuration schema. */
@@ -127,7 +127,7 @@ export const Config: z<Config, CommandSettings> = z.object({
     checkIntervalMinutes: z.number().min(0.001).default(5),
   }),
   home: z.string().default(''),
-  profilePatch: z.string().default(''),
+  overlayPatch: z.string().default(''),
 })
 
 /**

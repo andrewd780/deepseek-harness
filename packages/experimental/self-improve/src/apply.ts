@@ -3,26 +3,34 @@
  *
  * An apply writes the three parts of an evolved directory where dsh reads
  * them:
- * - the overlay's checked entries into a managed section of the profile
- *   patch (`cordis.patch.yml`), between `# >>> dsh self-improve` and
- *   `# <<< dsh self-improve` lines; the rest of the file stays byte for byte;
+ * - the overlay's checked entries into a managed section of a patch layer,
+ *   by default the Harness home's `cordis.patch.yml`, which every profile
+ *   applies after its own patch and which dsh's own editors never write;
+ *   the section lies between `# >>> dsh self-improve` and
+ *   `# <<< dsh self-improve` lines, and the rest of the file stays byte for
+ *   byte;
  * - `AGENTS.md` into a managed section of the Harness home's user-global
  *   `AGENTS.md`, between HTML comment lines, after the operator's own text;
- * - each entry of `skills/` into the Harness home's `skills/`, replacing an
- *   entry of the same name; entries an earlier apply wrote and the new
- *   directory lacks are removed.
+ * - each entry of `skills/` into the Harness home's `skills/`; entries an
+ *   earlier apply wrote and the new directory lacks are removed.
  *
  * A section already present is replaced where it stands; a new one is
- * appended. The overlay is checked against the overlay rules again, and the
- * files copied are limited to regular files with the evolved directory's
- * extensions; any violation refuses the whole apply before anything changes.
- * Before writing, every file or directory the apply changes is copied to a
- * new backup directory with a manifest; undo restores the newest apply's
- * copies after copying the current state to a snapshot of its own. Applies
- * and undos hold one lock.
+ * appended. Text files are written through symbolic links. The apply
+ * refuses, before anything changes, when the overlay breaks the overlay
+ * rules, when the evolved directory holds a file an apply never copies, when
+ * a managed section differs from what the newest apply wrote, or when a
+ * skill of the same name exists that no apply wrote. Every path it changes
+ * is first copied to a new backup directory with a manifest.
+ *
+ * Undo reverses the newest apply not yet undone: it restores the sections
+ * that apply replaced, keeping text the operator wrote outside them since,
+ * and the skill directories it replaced; a snapshot of everything undo
+ * replaces is kept first. An undone revision counts as undone until an apply
+ * writes it again. Applies and undos hold one lock and number their backups
+ * in order, independent of the clock.
  *
  * ```
- * <backups>/<time>/manifest.json   kind, source, the skills written, and each target
+ * <backups>/<time>/manifest.json   kind, sequence, source, sections, skills, and each target
  * <backups>/<time>/files/<n>       the copy of target n, when it existed
  * ```
  *
@@ -30,7 +38,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { cp, lstat, mkdir, readdir, readFile, rm, stat } from 'node:fs/promises'
+import { cp, lstat, mkdir, readdir, readFile, realpath, rm, stat } from 'node:fs/promises'
 import { dirname, extname, join } from 'node:path'
 
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
@@ -44,8 +52,8 @@ import type { OverlayEntry } from './overlay.ts'
 export interface LiveConfiguration {
   /** Absolute Harness home holding the user-global `AGENTS.md` and user `skills/`. */
   readonly home: string
-  /** Absolute profile patch receiving the overlay's entries. */
-  readonly profilePatch: string
+  /** Absolute patch layer receiving the overlay's entries. */
+  readonly overlayPatch: string
   /** Absolute directory of the backups; its parent holds the apply lock. */
   readonly backups: string
 }
@@ -56,47 +64,86 @@ export interface ApplySource {
   readonly evolved: string
   /** Where the evolved directory comes from, recorded in the backup manifest. */
   readonly description: string
+  /** The revision the evolved directory holds. */
+  readonly commit: string
 }
 
 /** The outcome of an apply. */
 export type ApplyResult =
   | { readonly status: 'unchanged' }
-  | { readonly status: 'applied'; readonly backup: string; readonly changed: readonly string[] }
+  | {
+    readonly status: 'applied'
+    readonly backup: string
+    readonly changed: readonly string[]
+    /** Each overlay entry written, such as `spill-policy (maxInlineTokens)` or `tool-web-fetch (off)`. */
+    readonly overlay: readonly string[]
+  }
 
 /** The outcome of an undo. */
 export interface UndoResult {
-  /** The backup whose copies were restored. */
+  /** The backup whose apply was reversed. */
   readonly backup: string
   /** The snapshot of what the undo replaced. */
   readonly snapshot: string
   readonly restored: readonly string[]
+  /** The revision the reversed apply wrote; `null` when its manifest names none. */
+  readonly commit: string | null
 }
+
+/** Which managed section a text target holds. */
+type TextKind = 'patch' | 'instructions'
 
 /** One path an apply changed or an undo replaced. */
 interface BackupTarget {
   readonly path: string
+  readonly kind: TextKind | 'tree'
   readonly existed: boolean
   /** The copy's path relative to the backup directory, when the target existed. */
   readonly copy?: string
+  /** For a text target, its managed section's lines before the change; `null` when it had none. */
+  readonly before?: readonly string[] | null
+}
+
+/** A text target's managed section after an operation; `null` when the target has none. */
+interface SectionRecord {
+  readonly path: string
+  readonly body: readonly string[] | null
 }
 
 /** The manifest of one backup directory. */
 interface BackupManifest {
   readonly version: 1
   readonly kind: 'apply' | 'undo'
+  /** Order among every backup, one more than the highest before it. */
+  readonly sequence: number
   readonly createdAt: string
   readonly source: string
+  /** The revision an apply wrote; `null` for an undo snapshot. */
+  readonly commit: string | null
   /** Skill entries the Harness home holds from applies once this apply is written; empty for an undo snapshot. */
   readonly skills: readonly string[]
+  /** Both text targets' managed sections once this apply is written; empty for an undo snapshot. */
+  readonly sections: readonly SectionRecord[]
   readonly targets: readonly BackupTarget[]
   readonly undoneAt?: string
 }
 
+/** A manifest with its directory. */
+interface StoredManifest {
+  readonly manifest: BackupManifest
+  readonly directory: string
+}
+
 /** One target's next state: text, a copy of a source directory, or absence. */
 type Desired =
-  | { readonly path: string; readonly text: string; readonly mode: number }
-  | { readonly path: string; readonly from: string }
-  | { readonly path: string; readonly absent: true }
+  | {
+    readonly path: string
+    readonly kind: TextKind
+    readonly text: string | undefined
+    readonly mode: number
+    readonly before: readonly string[] | null
+  }
+  | { readonly path: string; readonly kind: 'tree'; readonly from: string | undefined }
 
 /** A managed section's marker lines. */
 interface Section {
@@ -107,85 +154,124 @@ interface Section {
 /** A text's lines around its managed section. */
 interface Split {
   readonly before: readonly string[]
+  readonly body: readonly string[] | null
   readonly after: readonly string[]
-  readonly found: boolean
 }
 
 const MANIFEST = 'manifest.json'
 const PRIVATE = { mode: 0o600, dirMode: 0o700 } as const
 const LOCK_WAIT_MS = 60_000
 
-/** The managed section of the profile patch. */
+/** The managed section of the overlay's patch layer. */
 export const PATCH_SECTION: Section = {
-  start: '# >>> dsh self-improve: /self-improve apply manages the entries down to the closing line; /self-improve undo restores this file',
+  start: '# >>> dsh self-improve: /self-improve apply manages the entries down to the closing line; /self-improve undo restores them',
   end: '# <<< dsh self-improve',
 }
 
 /** The managed section of the user-global instructions. */
 export const INSTRUCTIONS_SECTION: Section = {
-  start: '<!-- >>> dsh self-improve: /self-improve apply manages this section; /self-improve undo restores this file -->',
+  start: '<!-- >>> dsh self-improve: /self-improve apply manages this section; /self-improve undo restores it -->',
   end: '<!-- <<< dsh self-improve -->',
 }
 
+const SECTIONS: Readonly<Record<TextKind, Section>> = { patch: PATCH_SECTION, instructions: INSTRUCTIONS_SECTION }
+
 /**
  * Write an evolved directory into the live configuration, backing up every path it changes.
- * @param source - the evolved directory and its description.
- * @param live - the Harness home, the profile patch, and the backup directory.
+ * @param source - the evolved directory, its description, and its revision.
+ * @param live - the Harness home, the overlay's patch layer, and the backup directory.
  * @param now - the backup's time.
- * @returns `unchanged` when the live configuration already matches, otherwise the backup and the changed paths.
- * @throws Error when the evolved directory breaks the overlay rules or holds a file an apply never copies,
- * when a managed section is damaged, or when the profile patch would not stay a YAML list.
+ * @returns `unchanged` when the live configuration already matches, otherwise the backup, the changed paths, and the
+ * overlay entries written.
+ * @throws Error when the evolved directory breaks the overlay rules or holds a file an apply never copies, when a
+ * managed section changed since the newest apply or is damaged, when a skill of the same name exists that no apply
+ * wrote, or when the patch layer would not stay a YAML list.
  */
 export async function applyEvolved(source: ApplySource, live: LiveConfiguration, now: Date): Promise<ApplyResult> {
   return await locked(live, async () => {
     const evolved = await readEvolved(source.evolved)
-    const managed = (await latestApply(live.backups))?.manifest.skills ?? []
-    const instructions = join(live.home, 'AGENTS.md')
-    const desired: Desired[] = [
-      await textTarget(live.profilePatch, patchText(await readText(live.profilePatch), evolved.overlay, live.profilePatch)),
-      await textTarget(instructions, instructionsText(await readText(instructions), evolved.agents, instructions)),
-      ...evolved.skills.map(name => ({ path: join(live.home, 'skills', name), from: join(source.evolved, 'skills', name) })),
-      ...managed.filter(name => !evolved.skills.includes(name)).map(name => ({ path: join(live.home, 'skills', name), absent: true as const })),
+    const manifests = await readManifests(live.backups)
+    const latest = latestApply(manifests)?.manifest
+    const recorded = (path: string): readonly string[] | null => latest?.sections.find(section => section.path === path)?.body ?? null
+    const texts = [
+      await textTarget('patch', live.overlayPatch, evolved.overlay.length === 0 ? null : stringify(evolved.overlay).trimEnd().split('\n'), recorded),
+      await textTarget('instructions', join(live.home, 'AGENTS.md'), evolved.agents?.trimEnd().split('\n') ?? null, recorded),
     ]
+    const managed = latest?.skills ?? []
+    const trees: Desired[] = []
+    for (const name of evolved.skills) {
+      const path = join(live.home, 'skills', name)
+      if (!managed.includes(name) && await entryKind(path) !== 'missing') {
+        throw new Error(`self-improve apply refused: ${path} exists and no apply wrote it; rename the skill or move it away`)
+      }
+      trees.push({ path, kind: 'tree', from: join(source.evolved, 'skills', name) })
+    }
+    for (const name of managed.filter(entry => !evolved.skills.includes(entry))) trees.push({ path: join(live.home, 'skills', name), kind: 'tree', from: undefined })
     const changes: Desired[] = []
-    for (const target of desired) if (await differs(target)) changes.push(target)
+    for (const target of [...texts.map(text => text.desired), ...trees]) if (await differs(target)) changes.push(target)
     if (changes.length === 0) return { status: 'unchanged' }
-    const backup = await snapshot(live.backups, now, {
+    const backup = await snapshot(live.backups, manifests, now, {
       kind: 'apply',
       source: source.description,
+      commit: source.commit,
       skills: evolved.skills,
-      paths: changes.map(change => change.path),
+      sections: texts.map(text => text.record),
+      changes,
     })
     for (const change of changes) await write(change)
-    return { status: 'applied', backup, changed: changes.map(change => change.path) }
+    return { status: 'applied', backup, changed: changes.map(change => change.path), overlay: evolved.overlay.map(describeEntry) }
   })
 }
 
 /**
- * Restore the newest apply that is not yet undone, after copying the current state to a snapshot.
- * @param live - the Harness home, the profile patch, and the backup directory.
+ * Reverse the newest apply not yet undone, after copying everything it replaces to a snapshot.
+ * @param live - the Harness home, the overlay's patch layer, and the backup directory.
  * @param now - the snapshot's time.
- * @returns the restored backup, the snapshot, and the restored paths.
- * @throws Error when no apply is left to undo, or when a manifest is invalid.
+ * @returns the reversed backup, the snapshot, the restored paths, and the revision the apply wrote.
+ * @throws Error when no apply is left to undo, when a manifest is invalid, or when a managed section is damaged.
  */
 export async function undoLatestApply(live: LiveConfiguration, now: Date): Promise<UndoResult> {
   return await locked(live, async () => {
-    const latest = await latestApply(live.backups)
+    const manifests = await readManifests(live.backups)
+    const latest = latestApply(manifests)
     if (latest === undefined) throw new Error('self-improve has no applied change to undo')
     const { manifest, directory } = latest
-    const saved = await snapshot(live.backups, now, {
+    const plan: Desired[] = []
+    for (const target of manifest.targets) {
+      if (target.kind === 'tree') {
+        plan.push({ path: target.path, kind: 'tree', from: target.copy === undefined ? undefined : join(directory, target.copy) })
+        continue
+      }
+      const before = target.before ?? null
+      const text = withSection(target.kind, await readText(target.path), before, target.path, !target.existed)
+      plan.push({ path: target.path, kind: target.kind, text, mode: await modeOf(target.path), before })
+    }
+    const saved = await snapshot(live.backups, manifests, now, {
       kind: 'undo',
       source: `the live configuration before undoing ${directory}`,
+      commit: null,
       skills: [],
-      paths: manifest.targets.map(target => target.path),
+      sections: [],
+      changes: plan,
     })
-    for (const target of manifest.targets) {
-      await rm(target.path, { recursive: true, force: true })
-      if (target.copy !== undefined) await cp(join(directory, target.copy), target.path, { recursive: true, verbatimSymlinks: true })
-    }
+    for (const change of plan) await write(change)
     await writeFileAtomic(join(directory, MANIFEST), `${JSON.stringify({ ...manifest, undoneAt: now.toISOString() }, undefined, 1)}\n`, PRIVATE)
-    return { backup: directory, snapshot: saved, restored: manifest.targets.map(target => target.path) }
+    return { backup: directory, snapshot: saved, restored: plan.map(change => change.path), commit: manifest.commit }
   })
+}
+
+/**
+ * The revisions whose newest apply was undone.
+ * @param live - the backup directory.
+ * @returns the undone revisions.
+ * @throws Error when a manifest is invalid.
+ */
+export async function undoneCommits(live: LiveConfiguration): Promise<ReadonlySet<string>> {
+  const newest = new Map<string, BackupManifest>()
+  for (const { manifest } of await readManifests(live.backups)) {
+    if (manifest.kind === 'apply' && manifest.commit !== null) newest.set(manifest.commit, manifest)
+  }
+  return new Set([...newest].filter(([, manifest]) => manifest.undoneAt !== undefined).map(([commit]) => commit))
 }
 
 async function locked<T>(live: LiveConfiguration, operation: () => Promise<T>): Promise<T> {
@@ -222,51 +308,72 @@ async function checkTree(path: string, label: string): Promise<void> {
   }
 }
 
-async function textTarget(path: string, text: string | undefined): Promise<Desired> {
-  return text === undefined ? { path, absent: true } : { path, text, mode: await modeOf(path) }
+/** One text target's next state, after checking its managed section still holds what the newest apply wrote. */
+async function textTarget(
+  kind: TextKind,
+  configured: string,
+  body: readonly string[] | null,
+  recorded: (path: string) => readonly string[] | null,
+): Promise<{ readonly desired: Desired; readonly record: SectionRecord }> {
+  const path = await realpath(configured).catch(() => configured)
+  const current = await readText(path)
+  const existing = split(current, SECTIONS[kind], path).body
+  if (existing !== null && !sameLines(existing, recorded(path))) {
+    throw new Error(`self-improve apply refused: the self-improve section of ${path} changed since the newest apply wrote it; `
+      + 'move your own lines out of it, or restore it with /self-improve undo')
+  }
+  return {
+    desired: { path, kind, text: withSection(kind, current, body, path), mode: await modeOf(path), before: existing },
+    record: { path, body },
+  }
 }
 
-/** The profile patch with the managed section holding `entries`; without the section when there are none. */
-function patchText(current: string | undefined, entries: readonly OverlayEntry[], path: string): string | undefined {
-  const { before, after, found } = split(current, PATCH_SECTION, path)
-  if (entries.length === 0) {
-    if (current === undefined) return undefined
-    const rest = trimBlankEnd([...before, ...after])
-    return joinLines(rest.some(isContent) ? rest : [...rest, '[]'])
+/**
+ * `current` with its managed section holding `body`, or without the section when `body` is `null`. Without the
+ * section, `undefined` stands for no file: an instructions file with nothing left, a patch layer that does not exist,
+ * or, with `created`, a patch layer the apply created that holds nothing else.
+ */
+function withSection(
+  kind: TextKind,
+  current: string | undefined,
+  body: readonly string[] | null,
+  path: string,
+  created = false,
+): string | undefined {
+  const section = SECTIONS[kind]
+  const parts = split(current, section, path)
+  if (body === null) {
+    const rest = trimBlankEnd([...parts.before, ...parts.after])
+    if (kind === 'instructions') return rest.length === 0 ? undefined : joinLines(rest)
+    const content = rest.some(isContent)
+    if (current === undefined || (created && !content)) return undefined
+    return joinLines(content ? rest : [...rest, '[]'])
   }
-  // A patch holding only the empty list `[]` cannot take block entries after it.
-  const emptyList = [...before, ...after].filter(isContent).every(line => line.trim() === '[]')
+  // A patch layer holding only the empty list `[]` cannot take block entries after it.
+  const emptyList = kind === 'patch' && [...parts.before, ...parts.after].filter(isContent).every(line => line.trim() === '[]')
   const keep = (lines: readonly string[]): readonly string[] => (emptyList ? lines.filter(line => line.trim() !== '[]') : lines)
-  const section = [PATCH_SECTION.start, ...stringify(entries).trimEnd().split('\n'), PATCH_SECTION.end]
-  const text = joinLines(found ? [...keep(before), ...section, ...keep(after)] : appended(keep(before), section))
-  const document = parseDocument(text, { customTags: [{ tag: 'tag:yaml.org,2002:js', resolve: (value: string) => value }] })
-  if (document.errors.length > 0 || !isSeq(document.contents)) {
-    throw new Error(`self-improve apply refused: adding the overlay entries would leave ${path} not a YAML list of entries; add them by hand:\n${stringify(entries)}`)
+  const lines = [section.start, ...body, section.end]
+  const placed = parts.body === null ? appended(keep(parts.before), lines) : [...keep(parts.before), ...lines, ...keep(parts.after)]
+  const text = joinLines(placed)
+  if (kind === 'patch') {
+    const document = parseDocument(text, { customTags: [{ tag: 'tag:yaml.org,2002:js', resolve: (value: string) => value }] })
+    if (document.errors.length > 0 || !isSeq(document.contents)) {
+      throw new Error(`self-improve apply refused: adding the overlay entries would leave ${path} not a YAML list of entries; add them by hand:\n${body.join('\n')}`)
+    }
   }
   return text
 }
 
-/** The user-global instructions with the managed section holding `agents`; without the section when it is absent. */
-function instructionsText(current: string | undefined, agents: string | undefined, path: string): string | undefined {
-  const { before, after, found } = split(current, INSTRUCTIONS_SECTION, path)
-  if (agents === undefined) {
-    const rest = trimBlankEnd([...before, ...after])
-    return rest.length === 0 ? undefined : joinLines(rest)
-  }
-  const section = [INSTRUCTIONS_SECTION.start, ...agents.trimEnd().split('\n'), INSTRUCTIONS_SECTION.end]
-  return joinLines(found ? [...before, ...section, ...after] : appended(before, section))
-}
-
-/** The lines of `text` before and after its managed section. */
+/** The lines of `text` before, inside, and after its managed section. */
 function split(text: string | undefined, section: Section, path: string): Split {
   const lines = text === undefined || text === '' ? [] : text.replace(/\n$/, '').split('\n')
   const start = lines.indexOf(section.start)
   const end = lines.indexOf(section.end)
-  if (start < 0 && end < 0) return { before: lines, after: [], found: false }
+  if (start < 0 && end < 0) return { before: lines, body: null, after: [] }
   if (start < 0 || end < start) {
     throw new Error(`self-improve apply refused: ${path} has a damaged self-improve section; restore it with /self-improve undo or remove the section's lines`)
   }
-  return { before: lines.slice(0, start), after: lines.slice(end + 1), found: true }
+  return { before: lines.slice(0, start), body: lines.slice(start + 1, end), after: lines.slice(end + 1) }
 }
 
 /** `section` after `lines`, separated by one blank line. */
@@ -290,49 +397,69 @@ function isContent(line: string): boolean {
   return trimmed !== '' && !trimmed.startsWith('#')
 }
 
+function sameLines(left: readonly string[], right: readonly string[] | null): boolean {
+  return right !== null && left.length === right.length && left.every((line, index) => line === right[index])
+}
+
+/** An overlay entry as the summary names it. */
+function describeEntry(entry: OverlayEntry): string {
+  return entry.disabled === true || entry.config === undefined ? `${entry.id} (off)` : `${entry.id} (${Object.keys(entry.config).join(', ')})`
+}
+
 /** Whether writing `target` would change what is there. */
 async function differs(target: Desired): Promise<boolean> {
-  if ('absent' in target) return await entryKind(target.path) !== 'missing'
-  if ('text' in target) return await readText(target.path) !== target.text
-  return await treeDigest(target.path) !== await treeDigest(target.from)
+  if (target.kind !== 'tree') return await readText(target.path) !== target.text
+  return await treeDigest(target.path) !== (target.from === undefined ? undefined : await treeDigest(target.from))
 }
 
 async function write(target: Desired): Promise<void> {
-  if ('text' in target) {
+  if (target.kind !== 'tree' && target.text !== undefined) {
     await writeFileAtomic(target.path, target.text, { mode: target.mode, dirMode: PRIVATE.dirMode })
     return
   }
   await rm(target.path, { recursive: true, force: true })
-  if ('from' in target) {
+  if (target.kind === 'tree' && target.from !== undefined) {
     await mkdir(dirname(target.path), { recursive: true, mode: PRIVATE.dirMode })
-    await cp(target.from, target.path, { recursive: true })
+    await cp(target.from, target.path, { recursive: true, verbatimSymlinks: true })
   }
 }
 
 /** Copy every existing path to a new backup directory and record the manifest; returns the directory. */
 async function snapshot(
   backups: string,
+  manifests: readonly StoredManifest[],
   now: Date,
-  record: { readonly kind: BackupManifest['kind']; readonly source: string; readonly skills: readonly string[]; readonly paths: readonly string[] },
+  record: {
+    readonly kind: BackupManifest['kind']
+    readonly source: string
+    readonly commit: string | null
+    readonly skills: readonly string[]
+    readonly sections: readonly SectionRecord[]
+    readonly changes: readonly Desired[]
+  },
 ): Promise<string> {
   const directory = await newBackupDirectory(backups, now, record.kind)
   const targets: BackupTarget[] = []
-  for (const [index, path] of record.paths.entries()) {
-    if (await entryKind(path) === 'missing') {
-      targets.push({ path, existed: false })
+  for (const [index, change] of record.changes.entries()) {
+    const before = change.kind === 'tree' ? {} : { before: change.before }
+    if (await entryKind(change.path) === 'missing') {
+      targets.push({ path: change.path, kind: change.kind, existed: false, ...before })
       continue
     }
     const copy = join('files', String(index))
     await mkdir(join(directory, 'files'), { recursive: true, mode: PRIVATE.dirMode })
-    await cp(path, join(directory, copy), { recursive: true, verbatimSymlinks: true })
-    targets.push({ path, existed: true, copy })
+    await cp(change.path, join(directory, copy), { recursive: true, verbatimSymlinks: true })
+    targets.push({ path: change.path, kind: change.kind, existed: true, copy, ...before })
   }
   const manifest: BackupManifest = {
     version: 1,
     kind: record.kind,
+    sequence: Math.max(0, ...manifests.map(entry => entry.manifest.sequence)) + 1,
     createdAt: now.toISOString(),
     source: record.source,
+    commit: record.commit,
     skills: record.skills,
+    sections: record.sections,
     targets,
   }
   await writeFileAtomic(join(directory, MANIFEST), `${JSON.stringify(manifest, undefined, 1)}\n`, PRIVATE)
@@ -351,18 +478,21 @@ async function newBackupDirectory(backups: string, now: Date, kind: BackupManife
   return directory
 }
 
-/** The newest apply manifest not yet undone, with its directory. */
-async function latestApply(backups: string): Promise<{ readonly manifest: BackupManifest; readonly directory: string } | undefined> {
-  const names = await entryKind(backups) === 'directory' ? (await readdir(backups)).sort().reverse() : []
+/** Every backup with a manifest, in sequence order; a directory without one holds a backup interrupted before any write. */
+async function readManifests(backups: string): Promise<readonly StoredManifest[]> {
+  const names = await entryKind(backups) === 'directory' ? await readdir(backups) : []
+  const manifests: StoredManifest[] = []
   for (const name of names) {
     const directory = join(backups, name)
     const text = await readText(join(directory, MANIFEST))
-    // A directory without a manifest holds a backup interrupted before anything was written.
-    if (text === undefined) continue
-    const manifest = manifestOf(text, join(directory, MANIFEST))
-    if (manifest.kind === 'apply' && manifest.undoneAt === undefined) return { manifest, directory }
+    if (text !== undefined) manifests.push({ manifest: manifestOf(text, join(directory, MANIFEST)), directory })
   }
-  return undefined
+  return manifests.sort((left, right) => left.manifest.sequence - right.manifest.sequence)
+}
+
+/** The newest apply not yet undone. */
+function latestApply(manifests: readonly StoredManifest[]): StoredManifest | undefined {
+  return manifests.findLast(entry => entry.manifest.kind === 'apply' && entry.manifest.undoneAt === undefined)
 }
 
 function manifestOf(text: string, path: string): BackupManifest {
@@ -374,22 +504,32 @@ function manifestOf(text: string, path: string): BackupManifest {
   }
   const invalid = new Error(`${path} is not a self-improve backup manifest`)
   if (!isRecord(value) || value['version'] !== 1) throw invalid
-  const { kind, createdAt, source, skills, targets, undoneAt } = value
-  if ((kind !== 'apply' && kind !== 'undo') || typeof createdAt !== 'string' || typeof source !== 'string') throw invalid
-  if (!isStrings(skills) || !Array.isArray(targets) || !targets.every(isTarget)) throw invalid
+  const { kind, sequence, createdAt, source, commit, skills, sections, targets, undoneAt } = value
+  if ((kind !== 'apply' && kind !== 'undo') || typeof sequence !== 'number' || !Number.isInteger(sequence)) throw invalid
+  if (typeof createdAt !== 'string' || typeof source !== 'string' || (commit !== null && typeof commit !== 'string') || !isStrings(skills)) throw invalid
+  if (!Array.isArray(sections) || !sections.every(isSection) || !Array.isArray(targets) || !targets.every(isTarget)) throw invalid
   if (undoneAt !== undefined && typeof undoneAt !== 'string') throw invalid
-  return { version: 1, kind, createdAt, source, skills, targets, ...undoneAt === undefined ? {} : { undoneAt } }
+  return { version: 1, kind, sequence, createdAt, source, commit, skills, sections, targets, ...undoneAt === undefined ? {} : { undoneAt } }
 }
 
 function isStrings(value: unknown): value is readonly string[] {
   return Array.isArray(value) && value.every(entry => typeof entry === 'string')
 }
 
+function isBody(value: unknown): value is readonly string[] | null {
+  return value === null || isStrings(value)
+}
+
+function isSection(value: unknown): value is SectionRecord {
+  return isRecord(value) && typeof value['path'] === 'string' && isBody(value['body'])
+}
+
 function isTarget(value: unknown): value is BackupTarget {
-  return isRecord(value)
-    && typeof value['path'] === 'string'
-    && typeof value['existed'] === 'boolean'
-    && (value['existed'] ? typeof value['copy'] === 'string' : value['copy'] === undefined)
+  if (!isRecord(value) || typeof value['path'] !== 'string' || typeof value['existed'] !== 'boolean') return false
+  const { kind, existed, copy, before } = value
+  if (existed ? typeof copy !== 'string' : copy !== undefined) return false
+  if (kind === 'tree') return before === undefined
+  return (kind === 'patch' || kind === 'instructions') && isBody(before)
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {

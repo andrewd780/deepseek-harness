@@ -9,9 +9,9 @@ import type { JobHooks, JobOutcome, JobSpec } from '@deepseek-ai/dsh-jobs'
 import LlmRuntime, { LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmModelInfo, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
-import { generations, nextGeneration, readAutoRecord } from '../src/auto.ts'
+import { generations, nextGeneration, nextStartPoint, readAutoRecord } from '../src/auto.ts'
 import { INSTRUCTIONS_SECTION, PATCH_SECTION } from '../src/apply.ts'
-import { internals } from '../src/command.ts'
+import { internals, openRun } from '../src/command.ts'
 import { RunDirectory } from '../src/directory.ts'
 import * as SelfImprove from '../src/index.ts'
 import { useFakeRuntime } from './fake-runtime.ts'
@@ -263,32 +263,58 @@ describe('the automatic pipeline', () => {
     expect(await run('apply run.json')).toEqual({ kind: 'success', text: `Your dsh configuration already holds run loader's result at ${evolved}.` })
     expect(await run('undo')).toEqual({
       kind: 'success',
-      text: `Restored ${join(home, 'AGENTS.md')}, ${join(home, 'skills', 'verify')} from ${backup}.\nWhat the undo replaced is saved in ${backup}-undo. New sessions use the restored configuration.`,
+      text: [
+        `Restored ${join(home, 'AGENTS.md')}, ${join(home, 'skills', 'verify')} from ${backup}.`,
+        `What the undo replaced is saved in ${backup}-undo. New sessions use the restored configuration.`,
+        'The automatic pipeline does not apply the undone result again, and the next generation does not start from it; /self-improve apply applies it by hand.',
+      ].join('\n'),
     })
     await expect(readFile(join(home, 'skills', 'verify', 'SKILL.md'), 'utf8')).rejects.toThrow(/ENOENT/)
     expect(await run('undo')).toEqual({ kind: 'error', text: 'self-improve has no applied change to undo' })
   })
 
-  it('reports an apply it could not make in the summary and still finishes', async () => {
-    const { job, home } = await harness()
+  it('keeps a generation whose apply failed unfinished, and retries the apply before anything else', async () => {
+    const { job, home, repo } = await harness()
     await mkdir(home, { recursive: true })
     await writeFile(join(home, 'AGENTS.md'), `${INSTRUCTIONS_SECTION.start}\nhalf a section\n`)
-    const { outcome } = await job('')
-    expect(outcome).toMatchObject({
-      status: 'completed',
-      result: expect.stringMatching(new RegExp(`\\nNot applied: self-improve apply refused: ${join(home, 'AGENTS.md').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} has a damaged self-improve section; restore it with /self-improve undo or remove the section's lines$`)) as string,
-    })
+    const failed = await job('')
+    const message = `Not applied: self-improve apply refused: ${join(home, 'AGENTS.md')} has a damaged self-improve section; restore it with /self-improve undo or remove the section's lines`
+    expect(failed.outcome).toMatchObject({ status: 'completed', result: expect.stringContaining(`\n${message}\nFix that and run /self-improve again; it retries the apply before the next generation starts.`) as string })
+    expect(await readAutoRecord(runDirectory(repo))).toBeUndefined()
+    await writeFile(join(home, 'AGENTS.md'), 'Mine.\n')
+    const retried = await job('')
+    expect(retried.reply.split('\n')[1]).toBe(`Continuing generation 1 in ${repo}.`)
+    expect(retried.outcome).toMatchObject({ status: 'completed', result: expect.stringMatching(/\nApplied to your dsh configuration: /) as string })
+    expect(await readFile(join(home, 'AGENTS.md'), 'utf8')).toBe(`Mine.\n\n${INSTRUCTIONS_SECTION.start}\nWork carefully.\n${INSTRUCTIONS_SECTION.end}\n`)
+    expect(await readAutoRecord(runDirectory(repo))).toBeDefined()
   })
 
-  it('writes the overlay into the running profile\'s patch and instructions into its home', async () => {
+  it('never applies an undone result again, and starts the next generation from before it', async () => {
+    const { job, run, repo, git } = await harness()
+    const base = await git('rev-parse', 'HEAD')
+    expect((await job('baseline run.json')).outcome).toMatchObject({ status: 'completed' })
+    expect((await job('round run.json')).outcome).toMatchObject({ status: 'completed' })
+    expect((await run('apply')).text).toMatch(/^Applied run loader at /)
+    expect((await run('undo')).kind).toBe('success')
+    const { outcome } = await job('')
+    expect(outcome).toMatchObject({ status: 'completed', result: expect.stringMatching(/\nNot applied: you undid this result with \/self-improve undo\. Run \/self-improve apply to apply it anyway\.$/) as string })
+    expect((await job('')).reply.split('\n')[1]).toBe(`Starting generation 2, which improves on generation 1's result, in ${repo}.`)
+    expect(JSON.parse(await readFile(join(repo, 'run-2.json'), 'utf8'))).toMatchObject({ startPoint: base })
+  })
+
+  it('writes the overlay into the home patch layer and instructions into the running profile\'s home', async () => {
     const profileRoot = await realpath(await mkdtemp(join(tmpdir(), 'dsh-self-improve-profile-')))
     roots.push(profileRoot)
     const profile = { home: join(profileRoot, 'home'), patchPath: join(profileRoot, 'home', 'profiles', 'desktop', 'cordis.patch.yml') }
     await mkdir(join(profile.patchPath, '..'), { recursive: true })
     await writeFile(profile.patchPath, '# mine\n- id: agent-loop\n  config:\n    agents: []\n')
     const { job } = await harness({ home: false, profile, evolved: { 'overlay.patch.yml': '- id: spill-policy\n  config:\n    maxInlineTokens: 2000\n' } })
-    expect((await job('')).outcome).toMatchObject({ status: 'completed' })
-    expect(await readFile(profile.patchPath, 'utf8')).toBe(`# mine\n- id: agent-loop\n  config:\n    agents: []\n\n${PATCH_SECTION.start}\n- id: spill-policy\n  config:\n    maxInlineTokens: 2000\n${PATCH_SECTION.end}\n`)
+    const { outcome } = await job('')
+    expect(outcome).toMatchObject({ status: 'completed', result: expect.stringContaining(`: ${join(profile.home, 'cordis.patch.yml')}, `) as string })
+    expect(outcome).toMatchObject({ result: expect.stringContaining(' Overlay entries: spill-policy (maxInlineTokens). New sessions use it.') as string })
+    expect(await readFile(join(profile.home, 'cordis.patch.yml'), 'utf8')).toBe(`${PATCH_SECTION.start}\n- id: spill-policy\n  config:\n    maxInlineTokens: 2000\n${PATCH_SECTION.end}\n`)
+    // dsh's own editors write the profile's patch; the apply leaves it alone.
+    expect(await readFile(profile.patchPath, 'utf8')).toBe('# mine\n- id: agent-loop\n  config:\n    agents: []\n')
     expect(await readFile(join(profile.home, 'skills', 'verify', 'SKILL.md'), 'utf8')).toContain('name: verify')
     expect(await readdir(join(profile.home, 'self-improve', 'backups'))).toHaveLength(1)
   })
@@ -297,9 +323,14 @@ describe('the automatic pipeline', () => {
     const patchRoot = await realpath(await mkdtemp(join(tmpdir(), 'dsh-self-improve-patch-')))
     roots.push(patchRoot)
     const patch = join(patchRoot, 'cordis.patch.yml')
-    const { job } = await harness({ home: false, config: { profilePatch: patch }, evolved: { 'overlay.patch.yml': '- id: spill-policy\n  config:\n    maxInlineTokens: 2000\n' } })
+    const { job, run } = await harness({
+      home: false,
+      config: { overlayPatch: patch, autoApply: false },
+      evolved: { 'overlay.patch.yml': '- id: spill-policy\n  config:\n    maxInlineTokens: 2000\n' },
+    })
     const before = await readdir(join(process.env['DSH_HOME'] ?? '', 'self-improve', 'backups')).catch(() => [])
     expect((await job('')).outcome).toMatchObject({ status: 'completed' })
+    expect((await run('apply')).text?.split('\n')[0]).toMatch(/ Overlay entries: spill-policy \(maxInlineTokens\)\.$/)
     expect(await readFile(patch, 'utf8')).toBe(`${PATCH_SECTION.start}\n- id: spill-policy\n  config:\n    maxInlineTokens: 2000\n${PATCH_SECTION.end}\n`)
     expect(await readdir(join(process.env['DSH_HOME'] ?? '', 'self-improve', 'backups'))).toHaveLength(before.length + 1)
   })
@@ -387,6 +418,25 @@ describe('/self-improve in the automatic mode', () => {
     expect(await state()).toMatchObject({ lastJob: 'job-1', lastStartedAt: fixedNow.toISOString() })
   })
 
+  it('starts no job from a scheduled check that was still running when the plugin was disposed', async () => {
+    internals.now = () => fixedNow
+    const reached = Promise.withResolvers<undefined>()
+    const gate = Promise.withResolvers<undefined>()
+    internals.memory = async () => {
+      reached.resolve(undefined)
+      await gate.promise
+      return 30 * 2 ** 30
+    }
+    const { run, started, home } = await harness({ config: { schedule: { enabled: true, time: '03:00', checkIntervalMinutes: 0.001 } } })
+    expect((await run('help')).text).toContain('This session now owns scheduled runs.')
+    await reached.promise
+    await contexts.pop()?.fiber.dispose()
+    gate.resolve(undefined)
+    const state = async () => JSON.parse(await readFile(join(home, 'self-improve', 'schedule.json'), 'utf8')) as Record<string, unknown>
+    await expect.poll(async () => (await state())['lastCheck'], { timeout: 10_000 }).toMatchObject({ reason: 'could not start the run for session agent-1: self-improve plugin disposed' })
+    expect(started).toHaveLength(0)
+  })
+
   it('reads the clock and vm_stat by default', async () => {
     const before = Date.now()
     expect(defaults.now().getTime()).toBeGreaterThanOrEqual(before)
@@ -416,6 +466,19 @@ describe('generations', () => {
       await writeFile(join(root, 'run.json'), invalid)
       await expect(nextGeneration(root, { index: 20, spec: '' }, 'x')).rejects.toThrow(join(root, 'run.json'))
     }
+  })
+
+  it('starts the generation after one without a trajectory from that generation\'s branch', async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-self-improve-start-')))
+    roots.push(root)
+    const { repo } = await repository(root)
+    const ctx = new Context()
+    contexts.push(ctx)
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LocalSubprocessRuntime)
+    const settings = { runsDirectory: '.agents/self-improve', scratchDirectory: join(root, 'scratch'), gitTimeoutMs: 60_000, processGraceMs: 3000, maxOutputBytes: 65_536 }
+    const opened = await openRun(ctx, settings, join(repo, 'run.json'), () => {})
+    expect(await nextStartPoint(opened, new Set(['anything']))).toBe('self-improve/loader')
   })
 
   it('reads a finished generation\'s record and refuses one that is not', async () => {

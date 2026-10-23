@@ -39,9 +39,9 @@ import type { JobHandle, JobOutcome, JobRegistry } from '@deepseek-ai/dsh-jobs'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-working-directory'
 
-import { undoLatestApply } from './apply.ts'
+import { undoLatestApply, undoneCommits } from './apply.ts'
 import type { ApplyResult, LiveConfiguration } from './apply.ts'
-import { applyRevision, generations, latestAccepted, nextGeneration, readAutoRecord, runPipeline } from './auto.ts'
+import { applyRevision, generations, latestAccepted, nextGeneration, nextStartPoint, readAutoRecord, runPipeline } from './auto.ts'
 import type { Generation } from './auto.ts'
 import { AutoScheduler, isScheduleTime, startScheduleTimer, vmStatMemory } from './auto-schedule.ts'
 import type { ScheduleSettings } from './auto-schedule.ts'
@@ -104,8 +104,8 @@ export interface CommandSettings {
   readonly schedule: ScheduleSettings
   /** The Harness home applies write into and the plugin keeps its state under; empty is the running profile's home. */
   readonly home: string
-  /** The profile patch applies add overlay entries to; empty is the running profile's `cordis.patch.yml`. */
-  readonly profilePatch: string
+  /** The patch layer applies add overlay entries to; empty is `<home>/cordis.patch.yml`, which every profile applies last. */
+  readonly overlayPatch: string
 }
 
 /** A run composed from its spec. */
@@ -204,18 +204,17 @@ class SelfImprove {
   private readonly runner: ProcessRunner
   private readonly live: LiveConfiguration
   private readonly autoDirectory: string
+  private disposed = false
 
   constructor(private readonly ctx: Context, private readonly settings: CommandSettings) {
     this.runner = subprocessRunner(ctx, { maxOutputBytes: settings.maxOutputBytes, graceMs: settings.processGraceMs })
     const profile: unknown = ctx.get('profileContext')
-    const launched = isRecord(profile) && typeof profile['home'] === 'string' && typeof profile['patchPath'] === 'string'
-      ? { home: profile['home'], patchPath: profile['patchPath'] }
-      : undefined
-    const home = settings.home !== '' ? resolveDshHome(settings.home) : launched?.home ?? resolveDshHome()
+    const launchedHome = isRecord(profile) && typeof profile['home'] === 'string' ? profile['home'] : undefined
+    const home = settings.home !== '' ? resolveDshHome(settings.home) : launchedHome ?? resolveDshHome()
     const state = join(home, 'self-improve')
     this.live = {
       home,
-      profilePatch: settings.profilePatch !== '' ? resolve(expandHomePath(settings.profilePatch)) : launched?.patchPath ?? join(home, 'cordis.patch.yml'),
+      overlayPatch: settings.overlayPatch !== '' ? resolve(expandHomePath(settings.overlayPatch)) : join(home, 'cordis.patch.yml'),
       backups: join(state, 'backups'),
     }
     this.autoDirectory = settings.auto.directory !== '' ? resolve(expandHomePath(settings.auto.directory)) : join(state, 'auto')
@@ -233,6 +232,7 @@ class SelfImprove {
   }
 
   async dispose(): Promise<void> {
+    this.disposed = true
     for (const job of this.active) job.controller.abort(new Error('self-improve plugin disposed'))
     await Promise.allSettled([...this.active].map(async job => await job.done))
   }
@@ -328,6 +328,8 @@ class SelfImprove {
 
   /** Create the automatic run when needed, pick its generation, and start the pipeline as a job owned by `owner`. */
   private async startAuto(owner: SessionId, signal?: AbortSignal): Promise<AutoStart> {
+    // A scheduled check still in flight when the plugin is disposed must not start a job no one will stop.
+    if (this.disposed) throw new Error('self-improve plugin disposed')
     const jobs = this.jobs()
     const { auto } = this.settings
     const created = await ensureStarterRun(this.autoDirectory, {
@@ -342,21 +344,24 @@ class SelfImprove {
     let opened = await this.open(generation.spec, () => {}, signal)
     const advanced = await readAutoRecord(opened.directory) !== undefined
     if (advanced) {
-      generation = await nextGeneration(this.autoDirectory, generation, opened.spec.branch)
+      generation = await nextGeneration(this.autoDirectory, generation, await nextStartPoint(opened, await undoneCommits(this.live)))
       opened = await this.open(generation.spec, () => {}, signal)
     }
     await this.checkRoleModel(opened.spec)
     narration.write(`self-improve auto: generation ${generation.index}, run ${opened.spec.name} in ${this.autoDirectory}`)
+    const log = (line: string): void => {
+      narration.write(line)
+    }
     const job = this.start(jobs, {
       label: `self-improve auto ${opened.spec.name}`,
       owner,
       auto: true,
       narration,
       work: async jobSignal => await runPipeline({
-        opened: await this.open(generation.spec, (line) =>{  narration.write(line) }, jobSignal),
+        opened: await this.open(generation.spec, log, jobSignal),
         calibrationRepeats: auto.calibrationRepeats,
         apply: this.settings.autoApply ? { enabled: true, live: this.live, now: () => internals.now() } : { enabled: false },
-        log: (line) =>{  narration.write(line) },
+        log,
         signal: jobSignal,
       }),
     })
@@ -422,7 +427,7 @@ class SelfImprove {
     const result: ApplyResult = await applyRevision(opened, accepted.commit, this.live, internals.now(), signal)
     if (result.status === 'unchanged') return `Your dsh configuration already holds run ${opened.spec.name}'s result at ${accepted.commit}.`
     return [
-      `Applied run ${opened.spec.name} at ${accepted.commit}: ${result.changed.join(', ')}.`,
+      `Applied run ${opened.spec.name} at ${accepted.commit}: ${result.changed.join(', ')}.${result.overlay.length === 0 ? '' : ` Overlay entries: ${result.overlay.join(', ')}.`}`,
       `The previous files are in ${result.backup}. New sessions use the change; /self-improve undo restores the backup.`,
     ].join('\n')
   }
@@ -432,6 +437,7 @@ class SelfImprove {
     return [
       `Restored ${result.restored.join(', ')} from ${result.backup}.`,
       `What the undo replaced is saved in ${result.snapshot}. New sessions use the restored configuration.`,
+      'The automatic pipeline does not apply the undone result again, and the next generation does not start from it; /self-improve apply applies it by hand.',
     ].join('\n')
   }
 

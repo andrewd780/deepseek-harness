@@ -173,7 +173,7 @@ describe('/self-improve through real Loader composition', () => {
     }
     expect(await readFile(join(home, 'skills', 'verify', 'SKILL.md'), 'utf8')).toBe('---\nname: verify\ndescription: Check the result before answering.\n---\nRun the check, then answer.\n')
     expect(await readFile(join(home, 'AGENTS.md'), 'utf8')).toBe([
-      '<!-- >>> dsh self-improve: /self-improve apply manages this section; /self-improve undo restores this file -->',
+      '<!-- >>> dsh self-improve: /self-improve apply manages this section; /self-improve undo restores it -->',
       'Work carefully. Check your result before you answer.',
       '<!-- <<< dsh self-improve -->',
       '',

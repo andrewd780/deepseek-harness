@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { writeFileSync } from 'node:fs'
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -60,14 +61,17 @@ async function scheduler(overrides: Partial<SchedulerDependencies> = {}) {
 describe('dueCheck', () => {
   const due = (now: Date, lastStartedAt?: Date, windowHours = 0) => dueCheck({ now, time: '03:00', lastStartedAt, minIntervalHours: 20, windowHours })
 
-  it('is due once the start time has come and the last start is old enough', () => {
-    expect(due(local(23, 2, 59))).toEqual({ due: false, reason: 'waiting for 03:00' })
-    expect(due(local(23, 3, 0))).toEqual({ due: true })
+  it('is due once no run started since the most recent start time and the last start is old enough', () => {
+    expect(due(local(23, 2, 59), local(22, 3, 0))).toEqual({ due: false, reason: 'already started at 2026-10-22 03:00; the next start time is 2026-10-23 03:00' })
+    expect(due(local(23, 3, 0), local(22, 3, 0))).toEqual({ due: true })
     expect(due(local(23, 23, 0), local(22, 3, 0))).toEqual({ due: true })
-    expect(due(local(23, 4, 0), local(23, 3, 1))).toEqual({ due: false, reason: 'already started today at 2026-10-23 03:01' })
+    expect(due(local(23, 4, 0), local(23, 3, 1))).toEqual({ due: false, reason: 'already started at 2026-10-23 03:01; the next start time is 2026-10-24 03:00' })
     expect(due(local(23, 4, 0), local(22, 22, 0))).toEqual({ due: false, reason: 'the last start, 2026-10-22 22:00, is less than 20 h ago' })
+    // A missed start is caught up later, across midnight, until the window closes.
+    expect(due(local(24, 1, 0), local(22, 3, 0))).toEqual({ due: true })
     expect(due(local(23, 6, 59), undefined, 4)).toEqual({ due: true })
-    expect(due(local(23, 7, 0), undefined, 4)).toEqual({ due: false, reason: 'today\'s window, 03:00 plus 4 h, has passed' })
+    expect(due(local(23, 7, 0), undefined, 4)).toEqual({ due: false, reason: 'the 4 h window after 2026-10-23 03:00 has passed; the next start time is 2026-10-24 03:00' })
+    expect(dueCheck({ now: local(24, 0, 30), time: '23:00', lastStartedAt: local(22, 23, 0), minIntervalHours: 20, windowHours: 4 })).toEqual({ due: true })
     expect(() => dueCheck({ now: local(23, 3), time: '3am', lastStartedAt: undefined, minIntervalHours: 0, windowHours: 0 })).toThrow('self-improve schedule time "3am" is not HH:MM')
   })
 
@@ -121,10 +125,26 @@ describe('AutoScheduler', () => {
   it('starts nothing while the schedule is off or not due, and records nothing then', async () => {
     const { schedule, statePath, setNow, starts } = await scheduler()
     expect(await schedule.tick()).toEqual({ started: false, reason: 'the schedule is off' })
+    await expect(readdir(join(statePath, '..'))).rejects.toThrow(/ENOENT/)
     await schedule.set(true, undefined, SessionId('session-a'))
+    await writeFile(statePath, JSON.stringify({ enabled: true, owner: 'session-a', lastStartedAt: local(22, 3).toISOString() }))
     setNow(local(23, 2, 0))
-    expect(await schedule.tick()).toEqual({ started: false, reason: 'waiting for 03:00' })
-    expect(await readScheduleState(statePath)).toEqual({ enabled: true, owner: 'session-a' })
+    expect(await schedule.tick()).toEqual({ started: false, reason: 'already started at 2026-10-22 03:00; the next start time is 2026-10-23 03:00' })
+    expect(await readScheduleState(statePath)).toEqual({ enabled: true, owner: 'session-a', lastStartedAt: local(22, 3).toISOString() })
+    expect(starts).toEqual([])
+  })
+
+  it('reads the schedule again under its lock, so a schedule turned off meanwhile starts nothing', async () => {
+    let statePath = ''
+    const { schedule, starts, ...rest } = await scheduler({
+      now: () => {
+        writeFileSync(statePath, JSON.stringify({ enabled: false, owner: 'session-a' }))
+        return local(23, 3, 5)
+      },
+    })
+    statePath = rest.statePath
+    await schedule.set(true, undefined, SessionId('session-a'))
+    expect(await schedule.tick()).toEqual({ started: false, reason: 'the schedule is off' })
     expect(starts).toEqual([])
   })
 
@@ -169,7 +189,7 @@ describe('AutoScheduler', () => {
       lastCheck: { at: local(23, 3, 5).toISOString(), reason: 'started job self-improve-1' },
     })
     setNow(local(23, 9, 0))
-    expect(await schedule.tick()).toEqual({ started: false, reason: 'already started today at 2026-10-23 03:05' })
+    expect(await schedule.tick()).toEqual({ started: false, reason: 'already started at 2026-10-23 03:05; the next start time is 2026-10-24 03:00' })
     setNow(local(24, 3, 0))
     expect(await schedule.tick()).toEqual({ started: true, job: 'self-improve-2' })
   })
@@ -244,7 +264,7 @@ describe('AutoScheduler', () => {
     expect((await schedule.describe()).split('\n').slice(3)).toEqual([
       'last start: 2026-10-23 03:05 (job self-improve-1)',
       'last due check: 2026-10-23 03:05: started job self-improve-1',
-      'now: already started today at 2026-10-23 03:05',
+      'now: already started at 2026-10-23 03:05; the next start time is 2026-10-24 03:00',
     ])
     const plain = await scheduler()
     await plain.schedule.set(false, undefined, undefined)

@@ -15,18 +15,23 @@
  * reach it. Its record lives under `<run>/trials/<job>/<task>/<trial>/`:
  * `record.json` with the Session tree's events, and `result.json` once the
  * checks judged it. A trial whose runtime failed has no result and runs again
- * when its job is measured again.
+ * when its job is measured again. Each trial's checks get a runner bound to
+ * its workspace and its own temporary directory, the only places a confined
+ * check may write; a trial whose checks cannot be graded under confinement
+ * records the reason as its failure, and the measurement stops.
  *
  * @module @deepseek-ai/dsh-experimental-self-improve/domain
  */
 
-import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { validatedSessionEvent } from '@deepseek-ai/dsh-sdk-client'
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 
 import type { EvaluationJobId, TaskId } from './brand.ts'
+import { GradingRefused } from './check-sandbox.ts'
+import type { CheckArea } from './check-sandbox.ts'
 import type { ComponentSet } from './components.ts'
 import { aggregate, taskMean } from './evaluate.ts'
 import type { EvaluationResult, TaskResult } from './evaluate.ts'
@@ -64,7 +69,12 @@ export interface SuiteDomainSettings {
   readonly shutdownTimeoutMs: number
   /** Trials run at once. */
   readonly concurrency: number
-  readonly runCommand: CommandRunner
+  /**
+   * The runner of one trial's check commands, given the directories its checks may write.
+   * @param area - the trial's workspace and its own temporary directory, with symbolic links resolved.
+   * @returns the runner; a {@link GradingRefused} it throws marks the trial errored and stops the measurement.
+   */
+  readonly checkRunner: (area: CheckArea) => CommandRunner
   /** Longest rendering of one message or tool payload in a trace. */
   readonly maxTraceCharacters: number
   /** Largest relative growth of the first request's prompt a candidate may carry; `undefined` sets no guard. */
@@ -208,9 +218,11 @@ export class SuiteDomain implements SelfImproveDomain {
       const workspace = join(scratch, 'workspace')
       const home = join(scratch, 'home')
       const agentsHome = join(scratch, 'agents')
+      const temp = join(scratch, 'tmp')
       await (task.workspace === undefined ? mkdir(workspace) : cp(task.workspace, workspace, { recursive: true }))
       await mkdir(home)
       await mkdir(agentsHome)
+      await mkdir(temp)
       const evolved = join(request.root, this.settings.evolvedDirectory)
       await copyIfPresent(join(evolved, 'AGENTS.md'), join(home, 'AGENTS.md'))
       await copyIfPresent(join(evolved, 'skills'), join(home, 'skills'))
@@ -230,7 +242,15 @@ export class SuiteDomain implements SelfImproveDomain {
       const record = await runTrial(launch, task.prompt, request.signal)
       await writeJson(join(directory, 'record.json'), record)
       if (record.failure !== undefined) return { failure: record.failure }
-      const checks = await runChecks(task, finalResponse(record), workspace, this.settings.runCommand, request.signal)
+      const runner = this.settings.checkRunner({ workspace: await realpath(workspace), temp: await realpath(temp) })
+      let checks: readonly CheckResult[]
+      try {
+        checks = await runChecks(task, finalResponse(record), workspace, runner, request.signal)
+      } catch (error) {
+        // A trial whose checks cannot be graded under confinement is errored, and the measurement stops with the reason.
+        if (error instanceof GradingRefused) await writeJson(join(directory, 'record.json'), { ...record, failure: error.message })
+        throw error
+      }
       const result: TrialResult = {
         reward: checks.filter(check => check.passed).length / checks.length,
         tokens: trialTokens(record.events),
@@ -345,7 +365,9 @@ function trialResultOf(value: unknown): TrialResult | undefined {
   const checks: CheckResult[] = []
   for (const check of value['checks']) {
     if (!isRecord(check) || typeof check['check'] !== 'string' || typeof check['passed'] !== 'boolean') return undefined
-    checks.push({ check: check['check'], passed: check['passed'] })
+    const detail = check['detail']
+    if (detail !== undefined && typeof detail !== 'string') return undefined
+    checks.push({ check: check['check'], passed: check['passed'], ...detail === undefined ? {} : { detail } })
   }
   return { reward: value['reward'], tokens, firstRequestInputTokens: firstRequest, checks }
 }

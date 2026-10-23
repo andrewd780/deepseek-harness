@@ -1,5 +1,6 @@
 import './isolated-home.ts'
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -9,6 +10,8 @@ import type { JobHooks, JobOutcome, JobSpec } from '@deepseek-ai/dsh-jobs'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import { EvaluationJobId } from '../src/brand.ts'
+import { SANDBOX_EXEC } from '../src/check-sandbox.ts'
+import { internals } from '../src/command.ts'
 import { RunDirectory } from '../src/directory.ts'
 import * as SelfImprove from '../src/index.ts'
 import { useFakeRuntime } from './fake-runtime.ts'
@@ -23,6 +26,7 @@ afterEach(async () => {
   for (const ctx of contexts.splice(0)) await ctx.fiber.dispose()
   fake?.restore()
   fake = undefined
+  internals.sandboxExecutable = SANDBOX_EXEC
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
 })
 
@@ -37,7 +41,13 @@ interface StartedJob {
   readonly output: string[]
 }
 
-async function harness(options: { readonly jobs?: 'present' | 'absent' | 'throws' | 'throws-text'; readonly scratch?: string; readonly spec?: Record<string, unknown> } = {}) {
+async function harness(options: {
+  readonly jobs?: 'present' | 'absent' | 'throws' | 'throws-text'
+  readonly scratch?: string
+  readonly spec?: Record<string, unknown>
+  /** Whether checks run under `sandbox-exec`; by default only where it exists. */
+  readonly sandboxChecks?: boolean
+} = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-self-improve-plugin-')))
   roots.push(root)
   const { repo, git } = await repository(root, options.spec)
@@ -70,7 +80,11 @@ async function harness(options: { readonly jobs?: 'present' | 'absent' | 'throws
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(RoleModel)
   await ctx.plugin(LocalSubprocessRuntime)
-  const fiber = ctx.plugin(SelfImprove, { scratchDirectory: options.scratch ?? join(root, 'scratch'), home: join(root, 'home') })
+  const fiber = ctx.plugin(SelfImprove, {
+    scratchDirectory: options.scratch ?? join(root, 'scratch'),
+    home: join(root, 'home'),
+    sandboxChecks: options.sandboxChecks ?? process.platform === 'darwin',
+  })
   await fiber
   const run = async (line: string, signal = new AbortController().signal): Promise<CommandResult> => {
     const handler = handlers.get('self-improve')
@@ -192,14 +206,47 @@ describe('/self-improve', () => {
     expect(await started[2]!.hooks.done).toEqual({ status: 'killed', detail: 'self-improve plugin disposed' })
   })
 
+  it('refuses to grade, rather than run checks unconfined, when sandbox-exec is missing', async () => {
+    internals.sandboxExecutable = '/nonexistent/sandbox-exec'
+    const { job, repo } = await harness({ sandboxChecks: true })
+    const outcome = await job('baseline run.json')
+    expect(outcome).toMatchObject({ status: 'failed', detail: matching(/^grading refused: \/nonexistent\/sandbox-exec could not run \(.+\); checks never run unconfined while sandboxChecks is on$/) })
+    const trials = join(repo, '.agents', 'self-improve', 'loader', 'trials')
+    const [evaluation = ''] = await readdir(trials)
+    const record = JSON.parse(await readFile(join(trials, evaluation, 'alpha', '0', 'record.json'), 'utf8')) as Record<string, unknown>
+    expect(record['failure']).toMatch(/^grading refused: /)
+    await expect(readFile(join(trials, evaluation, 'alpha', '0', 'result.json'), 'utf8')).rejects.toThrow(/ENOENT/)
+  })
+
+  it.runIf(process.platform === 'darwin')('denies a check writing outside its trial\'s directories, and the trial\'s result says why', async () => {
+    const { job, repo } = await harness({ sandboxChecks: true })
+    const outside = await realpath(await mkdtemp(join(tmpdir(), 'dsh-self-improve-outside-')))
+    roots.push(outside)
+    const escape = join(outside, 'escape.txt')
+    await writeFile(join(repo, 'suite.json'), JSON.stringify({
+      tasks: [
+        { id: 'alpha', split: 'evolve', prompt: 'Report when done.', checks: [{ command: ['node', '-e', `require('fs').writeFileSync(${JSON.stringify(escape)}, 'x')`], timeoutMs: 60_000 }] },
+        { id: 'gamma', split: 'heldout', prompt: 'Report when done.', checks: [{ answer: 'all done' }] },
+      ],
+    }))
+    expect(await job('baseline run.json')).toMatchObject({ status: 'completed', result: matching(/: score 0\.0000$/) })
+    expect(existsSync(escape)).toBe(false)
+    const trials = join(repo, '.agents', 'self-improve', 'loader', 'trials')
+    const [evaluation = ''] = await readdir(trials)
+    const result = JSON.parse(await readFile(join(trials, evaluation, 'alpha', '0', 'result.json'), 'utf8')) as { readonly checks: readonly unknown[] }
+    expect(result.checks).toEqual([{ check: matching(/^command node -e /), passed: false, detail: `Error: EPERM: operation not permitted, open '${escape}'` }])
+  })
+
   it('keeps trial scratch in the operating system temporary directory by default and forwards named variables', async () => {
     process.env['SELF_IMPROVE_TEST_FORWARDED'] = 'forwarded value'
     try {
       const { job } = await harness({
         scratch: '',
+        // With sandboxChecks off, checks run unconfined, as they did before the setting existed.
+        sandboxChecks: false,
         spec: { trial: { policyPatches: ['policy.patch.yml'], provider: 'mock', model: 'm', env: { FAKE_TEXT: 'all done' }, forwardEnv: ['SELF_IMPROVE_TEST_FORWARDED'] } },
       })
-      await job('baseline run.json')
+      expect(await job('baseline run.json')).toMatchObject({ status: 'completed', result: matching(/: score 0\.5000$/) })
     } finally {
       delete process.env['SELF_IMPROVE_TEST_FORWARDED']
     }

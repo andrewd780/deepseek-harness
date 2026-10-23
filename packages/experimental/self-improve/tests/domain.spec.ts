@@ -1,14 +1,16 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import type { DeepSeekHarnessOptions } from '@deepseek-ai/dsh-sdk-client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EvaluationJobId, TaskId } from '../src/brand.ts'
+import { GradingRefused } from '../src/check-sandbox.ts'
+import type { CheckArea } from '../src/check-sandbox.ts'
 import { FIRST_REQUEST_MEASURE, SuiteDomain, pool } from '../src/domain.ts'
 import type { SuiteDomainSettings } from '../src/domain.ts'
 import { OVERLAY_FILE, describeOverlayRules } from '../src/overlay.ts'
-import type { Suite } from '../src/suite.ts'
+import type { CommandRunner, Suite } from '../src/suite.ts'
 import { DSH_COMPONENTS, DSH_OVERLAY_RULES } from '../src/evolved-directory.ts'
 import { useFakeRuntime } from './fake-runtime.ts'
 import { evaluation } from './fixtures.ts'
@@ -44,7 +46,8 @@ async function setup(overrides: Partial<SuiteDomainSettings> = {}, overlay: stri
       [TaskId('later'), { id: TaskId('later'), split: 'heldout', prompt: 'Later.', checks: [{ answer: /x/ }] }],
     ]),
   }
-  const runCommand = vi.fn(async (_argv: readonly string[], cwd: string) => existsSync(join(cwd, 'seed.txt')))
+  const runCommand = vi.fn(async (_argv: readonly string[], cwd: string) => ({ passed: existsSync(join(cwd, 'seed.txt')) }))
+  const checkRunner = vi.fn((_area: CheckArea): CommandRunner => runCommand)
   const homes: {
     readonly agents: string
     readonly skill: string
@@ -76,12 +79,12 @@ async function setup(overrides: Partial<SuiteDomainSettings> = {}, overlay: stri
     trialTimeoutMs: 20_000,
     shutdownTimeoutMs: 5_000,
     concurrency: 2,
-    runCommand,
+    checkRunner,
     maxTraceCharacters: 500,
     maxPromptGrowth: 0.1,
     ...overrides,
   }
-  return { root, checkout, suite, runCommand, homes, settings, domain: new SuiteDomain(settings) }
+  return { root, checkout, suite, runCommand, checkRunner, homes, settings, domain: new SuiteDomain(settings) }
 }
 
 const request = (root: string, job: string, tasks: string[], trials = 2) => ({
@@ -106,7 +109,7 @@ describe('SuiteDomain', () => {
   })
 
   it('measures each trial in a fresh runtime with the evolved directory and scores it by the checks', async () => {
-    const { domain, checkout, homes, runCommand, root } = await setup()
+    const { domain, checkout, homes, runCommand, checkRunner, root } = await setup()
     const result = await domain.evaluate(request(checkout, 'j1', ['hello', 'other']))
     expect(result.perTask.get(TaskId('hello'))?.rewards).toEqual([1, 1])
     expect(result.perTask.get(TaskId('other'))?.rewards).toEqual([0, 0])
@@ -115,6 +118,10 @@ describe('SuiteDomain', () => {
     expect(homes.map(home => [home.agents, home.skill])).toEqual(Array.from({ length: 4 }, () => ['Work carefully.\n', '# Check\n']))
     expect(homes.every(home => home.agentsHome?.startsWith(join(root, 'scratch')) === true)).toBe(true)
     expect(runCommand).toHaveBeenCalledTimes(2)
+    // Each trial's checks may write only its own workspace and temporary directory, both with links resolved.
+    const scratch = await realpath(join(root, 'scratch'))
+    expect(checkRunner.mock.calls.map(([area]) => [relative(scratch, area.workspace).replace(/^trial-\w+/, 'trial'), relative(scratch, area.temp).replace(/^trial-\w+/, 'trial')]))
+      .toEqual(Array.from({ length: 4 }, () => [join('trial', 'workspace'), join('trial', 'tmp')]))
     const stored: unknown = JSON.parse(await readFile(join(root, 'run', 'trials', 'j1', 'hello', '0', 'result.json'), 'utf8'))
     expect(stored).toEqual({ reward: 1, tokens: null, firstRequestInputTokens: null, checks: [
       { check: 'answer all done', passed: true },
@@ -128,6 +135,48 @@ describe('SuiteDomain', () => {
     expect(trace).toContain('[assistant] all done')
     expect(trace).toContain('[check passed] file seed.txt seed')
     expect(await domain.renderTrace(EvaluationJobId('j1'), TaskId('later'), 0)).toBeUndefined()
+  })
+
+  it('keeps why a command check failed in the result, not in the rendered trace', async () => {
+    const { domain, checkout, root } = await setup({ checkRunner: () => async () => ({ passed: false, detail: 'Error: EPERM: operation not permitted' }) })
+    await domain.evaluate(request(checkout, 'j1', ['hello']))
+    const stored = JSON.parse(await readFile(join(root, 'run', 'trials', 'j1', 'hello', '0', 'result.json'), 'utf8')) as { readonly checks: readonly unknown[] }
+    expect(stored.checks.at(-1)).toEqual({ check: 'command node check.mjs', passed: false, detail: 'Error: EPERM: operation not permitted' })
+    const again = await domain.evaluate(request(checkout, 'j1', ['hello']))
+    expect(again.perTask.get(TaskId('hello'))?.rewards).toEqual([2 / 3, 2 / 3])
+    const trace = await domain.renderTrace(EvaluationJobId('j1'), TaskId('hello'), 0)
+    expect(trace).toContain('[check failed] command node check.mjs')
+    expect(trace).not.toContain('EPERM')
+  })
+
+  it('marks a trial errored and stops measuring when its checks cannot be graded under confinement', async () => {
+    const refusal = 'grading refused: /usr/bin/sandbox-exec could not run (missing)'
+    const { domain, checkout, root } = await setup({
+      concurrency: 1,
+      checkRunner: () => async () => {
+        throw new GradingRefused(refusal)
+      },
+    })
+    await expect(domain.evaluate(request(checkout, 'j1', ['hello', 'other']))).rejects.toThrow(refusal)
+    const record = JSON.parse(await readFile(join(root, 'run', 'trials', 'j1', 'hello', '0', 'record.json'), 'utf8')) as Record<string, unknown>
+    expect(record['failure']).toBe(refusal)
+    expect(existsSync(join(root, 'run', 'trials', 'j1', 'hello', '0', 'result.json'))).toBe(false)
+    // No later trial started once grading was refused.
+    expect(fake?.launches).toHaveLength(1)
+    await writeFile(join(root, 'run', 'trials', 'j1', 'hello', '0', 'result.json'), JSON.stringify({ reward: 1, tokens: null, firstRequestInputTokens: null, checks: [{ check: 'c', passed: true, detail: 1 }] }))
+    await expect(domain.evaluate(request(checkout, 'j1', ['hello']))).rejects.toThrow('is not a self-improve trial result')
+  })
+
+  it('lets any other failure of a check propagate without marking the trial', async () => {
+    const { domain, checkout, root } = await setup({
+      concurrency: 1,
+      checkRunner: () => async () => {
+        throw new Error('node is not on the PATH')
+      },
+    })
+    await expect(domain.evaluate(request(checkout, 'j1', ['hello']))).rejects.toThrow('node is not on the PATH')
+    const record = JSON.parse(await readFile(join(root, 'run', 'trials', 'j1', 'hello', '0', 'record.json'), 'utf8')) as Record<string, unknown>
+    expect(record['failure']).toBeUndefined()
   })
 
   it('counts a failed runtime as a missing trial, runs it again, and reports it from the smoke check', async () => {

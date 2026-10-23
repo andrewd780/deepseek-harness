@@ -1174,7 +1174,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-experimental-self-improve`
 
 - `inject`: `commands` · `llm` · `subprocess` · `workingDirectory`
-- `source`: [`packages/experimental/self-improve/src/command.ts:91`](../packages/experimental/self-improve/src/command.ts)
+- `source`: [`packages/experimental/self-improve/src/command.ts:92`](../packages/experimental/self-improve/src/command.ts)
 
 ```ts config-catalog
 /** The plugin configuration with every default filled. */
@@ -1189,6 +1189,11 @@ export interface CommandSettings {
   readonly processGraceMs: number
   /** Bytes kept of each process output stream. */
   readonly maxOutputBytes: number
+  /**
+   * Whether every task-check command runs under macOS `sandbox-exec`, writing only inside its trial's workspace and
+   * temporary directory, without network; a check that cannot run confined stops grading instead of running unconfined.
+   */
+  readonly sandboxChecks: boolean
   /** Whether the automatic pipeline writes an accepted result into the live configuration, after a backup. */
   readonly autoApply: boolean
   /** The automatic run's location, the route a new run is created with, and its calibration. */

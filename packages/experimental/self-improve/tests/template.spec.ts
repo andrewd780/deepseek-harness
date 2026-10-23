@@ -1,25 +1,29 @@
-import { execFile } from 'node:child_process'
 import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { parse } from 'yaml'
+import { confinedCheckRunner, SANDBOX_EXEC, unconfinedCheckRunner } from '../src/check-sandbox.ts'
 import { loadRunSpec } from '../src/spec.ts'
 import { loadSuite, runChecks } from '../src/suite.ts'
 import type { CommandRunner, Suite } from '../src/suite.ts'
 import { STARTER_TASKS, starterFiles } from '../src/template.ts'
 import type { StarterRoute } from '../src/template.ts'
+import { execRunner } from './exec-runner.ts'
 import { STARTER_SOLUTIONS } from './fixtures/starter-solutions.ts'
 
 const route: StarterRoute = { provider: 'ollama', model: 'qwen38-27b-abliterated-mlx-q4:latest', baseUrl: 'http://localhost:11434/v1', contextWindow: 32_768, rounds: 3 }
 
-/** Runs a check command on the host's Node, like the subprocess runner does with `node` on the PATH. */
-const node: CommandRunner = async (argv, cwd, timeoutMs) => await new Promise((resolve) => {
-  const [program, ...args] = argv
-  execFile(program === 'node' ? process.execPath : program, args, { cwd, timeout: timeoutMs }, (error) => {
-    resolve(error === null)
-  })
-})
+/** Whether checks run under the real `sandbox-exec`, as the plugin runs them by default on macOS. */
+const confined = process.platform === 'darwin'
+
+/** The runner the plugin gives a trial: confined to the workspace and its own temporary directory on macOS. */
+function checker(workspace: string, temp: string): CommandRunner {
+  const resolve = async (program: string): Promise<string> => (program === 'node' ? process.execPath : program)
+  if (confined) return confinedCheckRunner({ run: execRunner, resolve, executable: SANDBOX_EXEC }, { workspace, temp })
+  const unconfined = unconfinedCheckRunner(execRunner)
+  return async ([program, ...args], cwd, timeoutMs) => await unconfined([await resolve(program), ...args], cwd, timeoutMs)
+}
 
 let root = ''
 let suite: Suite
@@ -37,8 +41,11 @@ afterAll(async () => {
   await rm(root, { recursive: true, force: true })
 })
 
-async function workspace(task: string, solved: boolean): Promise<string> {
-  const directory = join(await mkdtemp(join(root, `${task}-`)), 'workspace')
+/** A trial's workspace for `task`, from its starting files or with its reference solution, and its check runner. */
+async function workspace(task: string, solved: boolean): Promise<{ readonly directory: string; readonly run: CommandRunner }> {
+  const trial = await mkdtemp(join(root, `${task}-`))
+  const directory = join(trial, 'workspace')
+  await mkdir(join(trial, 'tmp'))
   await cp(join(root, 'run', 'tasks', task), directory, { recursive: true })
   if (solved) {
     for (const [path, content] of Object.entries(STARTER_SOLUTIONS[task] ?? {})) {
@@ -46,7 +53,7 @@ async function workspace(task: string, solved: boolean): Promise<string> {
       await writeFile(join(directory, path), content)
     }
   }
-  return directory
+  return { directory, run: checker(directory, join(trial, 'tmp')) }
 }
 
 describe('the starter run', () => {
@@ -98,16 +105,20 @@ describe('the starter run', () => {
     ])
   })
 
-  it.each(STARTER_TASKS.map(task => task.id))('%s: every check passes on the solution, and the starting files fail the task', async (id) => {
+  it.each(STARTER_TASKS.map(task => task.id))('%s: every check passes on the solution, and the starting files fail the task, under the sandbox on macOS', async (id) => {
     const task = suite.tasks.get(id as never)!
-    const start = await runChecks(task, '', await workspace(id, false), node)
-    const solved = await runChecks(task, '', await workspace(id, true), node)
+    const start = await workspace(id, false)
+    const solution = await workspace(id, true)
+    const failing = await runChecks(task, '', start.directory, start.run)
+    const solved = await runChecks(task, '', solution.directory, solution.run)
     expect(solved.map(check => check.passed)).toEqual(task.checks.map(() => true))
-    expect(start.some(check => !check.passed)).toBe(true)
+    expect(failing.some(check => !check.passed)).toBe(true)
+    // A denied write or connection would show in a failed check's reason.
+    expect(failing.flatMap(check => (check.detail?.includes('EPERM') === true ? [check.detail] : []))).toEqual([])
   }, 120_000)
 
   it('fails tests that pass but miss the broken behaviors', async () => {
-    const directory = await workspace('duration-tests', false)
+    const { directory, run } = await workspace('duration-tests', false)
     await mkdir(join(directory, 'test'))
     await writeFile(join(directory, 'test', 'duration.test.mjs'), `import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -117,14 +128,15 @@ test('hours', () => {
   assert.equal(parseDuration('3h'), 10800)
 })
 `)
-    const results = await runChecks(suite.tasks.get('duration-tests' as never)!, '', directory, node)
+    const results = await runChecks(suite.tasks.get('duration-tests' as never)!, '', directory, run)
     expect(results.map(check => check.passed)).toEqual([true, false, true, false])
   }, 120_000)
 
   it('scores each starting workspace as recorded, so the suite has room to improve on every task', async () => {
     const scores: Record<string, string> = {}
     for (const task of suite.tasks.values()) {
-      const results = await runChecks(task, '', await workspace(task.id, false), node)
+      const { directory, run } = await workspace(task.id, false)
+      const results = await runChecks(task, '', directory, run)
       scores[task.id] = results.map(check => (check.passed ? 'pass' : 'fail')).join(' ')
     }
     expect(scores).toEqual({

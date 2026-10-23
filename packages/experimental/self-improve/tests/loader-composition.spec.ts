@@ -66,7 +66,15 @@ async function boot(base: string, selfImproveConfig: readonly string[], cwd: str
     `- name: 'cordis:${name}'`,
     ...name === '@deepseek-ai/dsh-sandbox-policy' ? ['  config:', '    mode: danger-full-access'] : [],
     ...name === '@deepseek-ai/dsh-agent-loop' ? ['  config:', '    agents: []'] : [],
-    ...name === '@deepseek-ai/dsh-experimental-self-improve' ? ['  config:', `    scratchDirectory: '${join(base, 'scratch')}'`, ...selfImproveConfig.map(line => `    ${line}`)] : [],
+    ...name === '@deepseek-ai/dsh-experimental-self-improve'
+      ? [
+        '  config:',
+        `    scratchDirectory: '${join(base, 'scratch')}'`,
+        // Checks run under the real sandbox-exec where it exists.
+        `    sandboxChecks: ${String(process.platform === 'darwin')}`,
+        ...selfImproveConfig.map(line => `    ${line}`),
+      ]
+      : [],
   ]).join('\n') + '\n'
   const configPath = join(base, 'cordis.yml')
   await writeFile(configPath, config)

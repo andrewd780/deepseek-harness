@@ -54,6 +54,7 @@ import { SuiteDomain } from './domain.ts'
 import { GitRevisionStore, repositoryRoot, runGit } from './git.ts'
 import { SelfImproveRun } from './loop.ts'
 import { createLlmTextModel } from './model.ts'
+import { confinedCheckRunner, SANDBOX_EXEC, unconfinedCheckRunner } from './check-sandbox.ts'
 import { subprocessRunner } from './process.ts'
 import type { ProcessRunner } from './process.ts'
 import { createAnalyst, createProposer } from './roles.ts'
@@ -99,6 +100,11 @@ export interface CommandSettings {
   readonly processGraceMs: number
   /** Bytes kept of each process output stream. */
   readonly maxOutputBytes: number
+  /**
+   * Whether every task-check command runs under macOS `sandbox-exec`, writing only inside its trial's workspace and
+   * temporary directory, without network; a check that cannot run confined stops grading instead of running unconfined.
+   */
+  readonly sandboxChecks: boolean
   /** Whether the automatic pipeline writes an accepted result into the live configuration, after a backup. */
   readonly autoApply: boolean
   /** The automatic run's location, the route a new run is created with, and its calibration. */
@@ -126,10 +132,11 @@ export interface OpenedRun {
   readonly git: (args: readonly string[], signal?: AbortSignal) => Promise<string>
 }
 
-/** Test seams for the schedule's clock and memory reader. */
-export const internals: { now(): Date; memory(run: ProcessRunner): Promise<number> } = {
+/** Test seams for the schedule's clock and memory reader, and for the path of `sandbox-exec`. */
+export const internals: { now(): Date; memory(run: ProcessRunner): Promise<number>; sandboxExecutable: string } = {
   now: () => new Date(),
   memory: async run => await vmStatMemory(run, VM_STAT_TIMEOUT_MS),
+  sandboxExecutable: SANDBOX_EXEC,
 }
 
 const VM_STAT_TIMEOUT_MS = 10_000
@@ -541,7 +548,7 @@ class Narration {
  */
 export async function openRun(
   ctx: Context,
-  config: Pick<CommandSettings, 'runsDirectory' | 'scratchDirectory' | 'gitTimeoutMs' | 'processGraceMs' | 'maxOutputBytes'>,
+  config: Pick<CommandSettings, 'runsDirectory' | 'scratchDirectory' | 'gitTimeoutMs' | 'processGraceMs' | 'maxOutputBytes' | 'sandboxChecks'>,
   specPath: string,
   log: (line: string) => void,
   signal?: AbortSignal,
@@ -586,10 +593,13 @@ export async function openRun(
     trialTimeoutMs: spec.trial.timeoutMs,
     shutdownTimeoutMs: spec.trial.shutdownTimeoutMs,
     concurrency: spec.trial.concurrency,
-    runCommand: async (argv, cwd, timeoutMs, commandSignal) => {
-      const result = await runner({ argv, cwd, timeoutMs, signal: commandSignal })
-      return result.exitCode === 0
-    },
+    checkRunner: config.sandboxChecks
+      ? area => confinedCheckRunner({
+        run: runner,
+        resolve: async (program, resolveSignal) => await ctx.subprocess.resolveExecutable(program, undefined, resolveSignal),
+        executable: internals.sandboxExecutable,
+      }, area)
+      : () => unconfinedCheckRunner(runner),
     maxTraceCharacters: spec.trial.maxTraceCharacters,
     maxPromptGrowth: spec.trial.maxPromptGrowth,
   })

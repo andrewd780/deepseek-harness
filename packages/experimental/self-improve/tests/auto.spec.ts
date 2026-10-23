@@ -113,6 +113,7 @@ async function harness(options: HarnessOptions = {}) {
   const home = join(root, 'home')
   await ctx.plugin(SelfImprove, {
     scratchDirectory: join(root, 'scratch'),
+    sandboxChecks: process.platform === 'darwin',
     ...options.home === false ? {} : { home },
     ...options.config,
     auto: { directory: repo, ...options.config?.['auto'] as object },
@@ -476,7 +477,14 @@ describe('generations', () => {
     contexts.push(ctx)
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(LocalSubprocessRuntime)
-    const settings = { runsDirectory: '.agents/self-improve', scratchDirectory: join(root, 'scratch'), gitTimeoutMs: 60_000, processGraceMs: 3000, maxOutputBytes: 65_536 }
+    const settings = {
+      runsDirectory: '.agents/self-improve',
+      scratchDirectory: join(root, 'scratch'),
+      gitTimeoutMs: 60_000,
+      processGraceMs: 3000,
+      maxOutputBytes: 65_536,
+      sandboxChecks: false,
+    }
     const opened = await openRun(ctx, settings, join(repo, 'run.json'), () => {})
     expect(await nextStartPoint(opened, new Set(['anything']))).toBe('self-improve/loader')
   })

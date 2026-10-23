@@ -76,6 +76,7 @@ A due check that cannot start records why in `<home>/self-improve/schedule.json`
 - id: self-improve
   name: '@deepseek-ai/dsh-experimental-self-improve'
   config:
+    sandboxChecks: true
     autoApply: true
     auto:
       provider: ollama
@@ -99,7 +100,7 @@ A run uses four kinds of files in a git repository:
 
 1. **Evolved directory** — a tracked directory, outside the runs directory, holding any of `overlay.patch.yml` (a profile patch every trial applies before the policy patches), `AGENTS.md` (copied into each trial's Harness home as user-global instructions), and `skills/` (copied there as user skills). The overlay may only set the compaction, tool-result pruning, output spilling, system prompt, and repeated-tool reminder settings that [`DSH_OVERLAY_RULES`](src/evolved-directory.ts) lists, and turn tools off; a measurement whose overlay breaks these rules fails before any trial starts, and each trial loads a JSON copy of the checked entries.
 2. **Policy patches** — frozen profile patches applied after the overlay: the trial's model rows, permissions, sandbox mode, and every row a candidate must not change. Trials run without a person, so the patches must grant the permissions the tasks need.
-3. **Task suite** — a JSON file of tasks, each with a prompt, an optional starting workspace, a split (`evolve` or `heldout`), and checks: an `answer` pattern for the final response, a `file` pattern for a file the trial leaves, or a `command` that must exit 0 in the workspace. A trial's reward is the fraction of its checks that pass. [`src/suite.ts`](src/suite.ts) defines the format.
+3. **Task suite** — a JSON file of tasks, each with a prompt, an optional starting workspace, a split (`evolve` or `heldout`), and checks: an `answer` pattern for the final response, a `file` pattern for a file the trial leaves, or a `command` that must exit 0 in the workspace. A trial's reward is the fraction of its checks that pass. [`src/suite.ts`](src/suite.ts) defines the format. With `sandboxChecks` on, the default, every `command` runs under macOS `sandbox-exec`: it may write only inside the trial's workspace and the trial's own temporary directory, which is its `TMPDIR`, and it has no network; reads and starting processes work as usual. When `sandbox-exec` is missing or reports a failure of its own, the trial is marked errored with the reason and the measurement stops, instead of running the check unconfined. A failed `command` check keeps one line of its standard error in the trial's `result.json`.
 4. **Run spec** — a JSON file naming the suite, the evolved directory, the trial route, the operator variables trials receive, the route of the search roles, and `delta`, the noise band, as a number or `"calibrate"`. A spec that calibrates names `calibration.method`: `spread`, the largest difference between the baseline's repeated scores (the paper's definition), or `z`, `calibration.z` (default 2) deviations of the difference of two evaluations (the reference implementation's estimator, twice the spread on two evaluations). Omitted constants take the reference coding instance's values: 20 rounds, 2 candidates per round, 2 trials per task, and an edit budget annealed from 4 in the first round to 1 in the last. The cost rule allows 25% more tokens per additional passing trial (`selection.costPerPass`), the reference's rate whatever the suite's size; on its 178 trials that is β₁ = 44.5. [`src/spec.ts`](src/spec.ts) defines the format.
 
 ```json
@@ -160,6 +161,7 @@ The edit history, the prune set of components whose recent edits gained nothing,
 | [`src/schedule.ts`](src/schedule.ts), [`src/history.ts`](src/history.ts), [`src/selection.ts`](src/selection.ts), [`src/calibrate.ts`](src/calibrate.ts) | Edit budget, history and directives, admissibility, noise band |
 | [`src/critic.ts`](src/critic.ts), [`src/roles.ts`](src/roles.ts), [`src/model.ts`](src/model.ts) | Reviewer, analyst, proposer, and their model requests |
 | [`src/domain.ts`](src/domain.ts), [`src/trial.ts`](src/trial.ts), [`src/suite.ts`](src/suite.ts) | Trials in fresh runtimes, checks, and token accounting |
+| [`src/check-sandbox.ts`](src/check-sandbox.ts) | The `sandbox-exec` policy of check commands, and the refusal to grade without it |
 | [`src/git.ts`](src/git.ts), [`src/directory.ts`](src/directory.ts) | Evolve branch, candidate checkouts, and run files |
 | [`src/evolved-directory.ts`](src/evolved-directory.ts) | Component set, leakage patterns, and overlay rules of a dsh evolved directory |
 | [`src/overlay.ts`](src/overlay.ts) | Overlay check and the proposer's statement of the rules |
@@ -328,7 +330,7 @@ A changed instructions section or skill catalog changes the system-level prefix 
 <a id="known-limitations-and-deferred-work"></a>
 
 - **Only configuration evolves** — candidates change the overlay's listed settings, instructions, and skills; plugin code, other configuration, tool descriptions, and the agent loop stay out of reach.
-- **Unattended trials** — the trial profile and the policy patches alone decide what a trial may do, and check commands run on the host through the subprocess provider. The dsh sandbox confines a trial's file writes, not its reads or network access. The starter suite's checks import and test the code a trial wrote, so that code runs on the host without the sandbox.
+- **Unattended trials** — the trial profile and the policy patches alone decide what a trial may do. The dsh sandbox confines a trial's file writes, not its reads or network access, and `sandbox-exec` confines a check's writes and network, not its reads. `sandbox-exec` exists only on macOS, so elsewhere grading is refused unless `sandboxChecks` is off, which runs checks, and the trial-written code they import and test, unconfined on the host.
 - **Applied overlays are measured elsewhere** — trials measure an overlay on the trial profile, `sdk` by default, while an apply writes it into the home patch layer of every profile. An entry a profile composes per agent preset, such as compaction or a tool in the Web and desktop profiles, may meet only a disabled host row and change nothing, and a `config` replaces the whole configuration a profile's bundles give that entry, such as the system prompt's persona prefix. The summary names every overlay entry an apply writes.
 - **Auto-apply follows the run's rule** — the pipeline applies any final incumbent that is an accepted candidate, including one accepted within the noise band for a token saving or a new structural component; the held-out scores are reported, not used to decide.
 - **Generations start fresh** — each generation measures its baseline again and starts with an empty edit history and prune set.

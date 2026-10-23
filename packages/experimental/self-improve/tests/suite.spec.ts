@@ -127,7 +127,7 @@ describe('runChecks', () => {
     await writeFile(join(outside, 'secret.txt'), 'ok')
     await symlink(join(outside, 'secret.txt'), join(workspace, 'link.txt'))
     await mkdir(join(workspace, 'dir'))
-    const run = vi.fn(async () => true)
+    const run = vi.fn(async () => ({ passed: true }))
     const signal = new AbortController().signal
     const results = await runChecks({
       id: TaskId('t'),

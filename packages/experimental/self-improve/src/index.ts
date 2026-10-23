@@ -20,6 +20,7 @@ export * from './auto.ts'
 export * from './auto-schedule.ts'
 export * from './bootstrap.ts'
 export * from './brand.ts'
+export * from './check-sandbox.ts'
 export * from './calibrate.ts'
 export * from './components.ts'
 export * from './critic.ts'
@@ -61,6 +62,8 @@ export interface Config {
   processGraceMs?: number
   /** Bytes kept of each process output stream. */
   maxOutputBytes?: number
+  /** Whether every task-check command runs under macOS `sandbox-exec`, writing only inside its trial's directories, without network. */
+  sandboxChecks?: boolean
   /** Whether the automatic pipeline writes an accepted result into the live configuration, after a backup. */
   autoApply?: boolean
   /** The automatic run; the route and rounds are written into a new run and do not change an existing one. */
@@ -108,6 +111,7 @@ export const Config: z<Config, CommandSettings> = z.object({
   gitTimeoutMs: z.number().default(60_000),
   processGraceMs: z.number().default(3_000),
   maxOutputBytes: z.number().default(65_536),
+  sandboxChecks: z.boolean().default(true),
   autoApply: z.boolean().default(true),
   auto: z.object({
     directory: z.string().default(''),

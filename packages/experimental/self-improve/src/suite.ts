@@ -70,13 +70,27 @@ export interface Suite {
   readonly tasks: ReadonlyMap<TaskId, SuiteTask>
 }
 
+/** Whether a check command exited 0, and why not when it did not. */
+export interface CommandOutcome {
+  readonly passed: boolean
+  /** One line of the command's standard error, or how it ended, when it failed. */
+  readonly detail?: string
+}
+
 /** Runs a check command in a workspace and reports whether it exited 0. */
-export type CommandRunner = (argv: readonly [string, ...string[]], cwd: string, timeoutMs: number, signal?: AbortSignal) => Promise<boolean>
+export type CommandRunner = (
+  argv: readonly [string, ...string[]],
+  cwd: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+) => Promise<CommandOutcome>
 
 /** One check's outcome. */
 export interface CheckResult {
   readonly check: string
   readonly passed: boolean
+  /** Why a command check failed; kept in the trial's result, not shown to the search roles. */
+  readonly detail?: string
 }
 
 const TASK_ID = /^[\w.-]+$/
@@ -124,7 +138,7 @@ export async function runChecks(
     } else if ('file' in check) {
       results.push({ check: `file ${check.file} ${check.matches.source}`, passed: await fileMatches(workspace, check) })
     } else {
-      results.push({ check: `command ${check.command.join(' ')}`, passed: await run(check.command, workspace, check.timeoutMs, signal) })
+      results.push({ check: `command ${check.command.join(' ')}`, ...await run(check.command, workspace, check.timeoutMs, signal) })
     }
   }
   return results

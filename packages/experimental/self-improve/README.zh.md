@@ -76,6 +76,7 @@ kind: "package-reference"
 - id: self-improve
   name: '@deepseek-ai/dsh-experimental-self-improve'
   config:
+    sandboxChecks: true
     autoApply: true
     auto:
       provider: ollama
@@ -99,7 +100,7 @@ kind: "package-reference"
 
 1. **演化目录** — 一个受跟踪、位于运行目录之外的目录，可包含 `overlay.patch.yml`（每次试验在策略补丁之前应用的 profile 补丁）、`AGENTS.md`（复制到每次试验的 Harness home，作为用户全局指令）和 `skills/`（复制到同一位置作为用户 skills）。overlay 只能设置 [`DSH_OVERLAY_RULES`](src/evolved-directory.ts) 列出的压缩、工具结果修剪、输出溢出、系统提示词和重复工具提醒设置，以及关闭工具；overlay 违反这些规则的度量会在任何试验启动之前失败，每次试验加载的是已检查条目的 JSON 副本。
 2. **策略补丁** — 在 overlay 之后应用的冻结 profile 补丁：试验的模型配置行、权限、沙箱模式，以及候选不得修改的每一行。试验在无人值守下运行，因此补丁必须授予任务所需的权限。
-3. **任务集** — 一个 JSON 任务文件，每个任务包含提示词、可选的起始工作区、划分（`evolve` 或 `heldout`）和检查：对最终回复的 `answer` 模式、对试验留下的文件的 `file` 模式，或必须在工作区中以 0 退出的 `command`。试验的奖励是其通过的检查所占比例。格式由 [`src/suite.ts`](src/suite.ts) 定义。
+3. **任务集** — 一个 JSON 任务文件，每个任务包含提示词、可选的起始工作区、划分（`evolve` 或 `heldout`）和检查：对最终回复的 `answer` 模式、对试验留下的文件的 `file` 模式，或必须在工作区中以 0 退出的 `command`。试验的奖励是其通过的检查所占比例。格式由 [`src/suite.ts`](src/suite.ts) 定义。`sandboxChecks` 开启时（默认开启），每个 `command` 都在 macOS `sandbox-exec` 下运行：它只能在试验的工作区和该试验自己的临时目录（即它的 `TMPDIR`）中写入，且没有网络；读取和启动进程照常可用。当 `sandbox-exec` 缺失或报告其自身的失败时，该试验会被标记为出错并附上原因，度量随之停止，而不会在不受限制的情况下运行检查。失败的 `command` 检查会在试验的 `result.json` 中保留一行标准错误输出。
 4. **运行 spec** — 一个 JSON 文件，指明任务集、演化目录、试验路由、试验接收的操作者环境变量、搜索角色的路由，以及噪声带 `delta`：一个数值或 `"calibrate"`。需要校准的 spec 须指明 `calibration.method`：`spread` 取 baseline 重复度量分数之间的最大差值（论文的定义），`z` 取两次度量之差的 `calibration.z`（默认 2）个偏差（参考实现的估计量，在两次度量上等于差值的两倍）。省略的常量取参考编码实例的值：20 轮、每轮 2 个候选、每个任务 2 次试验，编辑预算从第一轮的 4 退火到最后一轮的 1。成本规则对每多通过一次试验允许增加 25% 的 token（`selection.costPerPass`），无论任务集大小都沿用参考实现的这一比率；在参考实现的 178 次试验上即 β₁ = 44.5。格式由 [`src/spec.ts`](src/spec.ts) 定义。
 
 ```json
@@ -160,6 +161,7 @@ kind: "package-reference"
 | [`src/schedule.ts`](src/schedule.ts)、[`src/history.ts`](src/history.ts)、[`src/selection.ts`](src/selection.ts)、[`src/calibrate.ts`](src/calibrate.ts) | 编辑预算、历史与指令、可接受性、噪声带 |
 | [`src/critic.ts`](src/critic.ts)、[`src/roles.ts`](src/roles.ts)、[`src/model.ts`](src/model.ts) | 审查者、analyst、proposer 及其模型请求 |
 | [`src/domain.ts`](src/domain.ts)、[`src/trial.ts`](src/trial.ts)、[`src/suite.ts`](src/suite.ts) | 全新运行时中的试验、检查与 token 统计 |
+| [`src/check-sandbox.ts`](src/check-sandbox.ts) | 检查命令的 `sandbox-exec` 策略，以及缺少它时拒绝评分 |
 | [`src/git.ts`](src/git.ts)、[`src/directory.ts`](src/directory.ts) | evolve 分支、候选检出目录与运行文件 |
 | [`src/evolved-directory.ts`](src/evolved-directory.ts) | dsh 演化目录的组件集合、泄漏模式与 overlay 规则 |
 | [`src/overlay.ts`](src/overlay.ts) | overlay 检查，以及向 proposer 陈述的规则 |
@@ -328,7 +330,7 @@ Reply with one JSON object and nothing else: {"verdict": "accept" or "reject", "
 <a id="known-limitations-and-deferred-work"></a>
 
 - **只演化配置** — 候选修改 overlay 中列出的设置、指令和 skills；插件代码、其他配置、工具描述和 agent 循环不在可修改范围内。
-- **无人值守的试验** — 只有试验 profile 和策略补丁决定试验可以做什么，检查命令通过 subprocess 提供方在宿主机上运行。dsh 沙箱限制试验的文件写入，不限制读取或网络访问。入门任务集的检查会导入并测试试验写下的代码，因此这些代码在宿主机上运行，不受沙箱限制。
+- **无人值守的试验** — 只有试验 profile 和策略补丁决定试验可以做什么。dsh 沙箱限制试验的文件写入，不限制读取或网络访问；`sandbox-exec` 限制检查的写入和网络，不限制其读取。`sandbox-exec` 只存在于 macOS，因此在其他系统上评分会被拒绝，除非关闭 `sandboxChecks`；关闭后，检查以及它们导入并测试的试验代码会在宿主机上不受限制地运行。
 - **应用的 overlay 在别处度量** — 试验在试验 profile（默认 `sdk`）上度量 overlay，而应用把它写进对每个 profile 生效的 home 补丁层。某个 profile 按 agent 预设组合的条目（例如 Web 和桌面 profile 中的压缩或某个工具）可能只匹配到一个被禁用的宿主行而不产生任何改变；`config` 会替换该 profile 的 bundle 为这一条目提供的全部配置，例如系统提示词的角色前缀。总结会列出应用写入的每个 overlay 条目。
 - **自动应用遵循运行的规则** — 流水线会应用任何作为被接受候选的最终 incumbent，包括在噪声带内因节省 token 或新增结构性组件而被接受的候选；held-out 分数只用于报告，不参与决定。
 - **每一代从头开始** — 每一代都会重新度量其 baseline，并以空的编辑历史和剪枝集开始。

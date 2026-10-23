@@ -2,14 +2,14 @@ import './isolated-home.ts'
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import type { JobHooks, JobOutcome, JobSpec } from '@deepseek-ai/dsh-jobs'
 import LlmRuntime, { LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmModelInfo, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
-import { generations, nextGeneration, nextStartPoint, readAutoRecord } from '../src/auto.ts'
+import { generations, nextGeneration, nextStartPoint, readAutoRecord, runPipeline } from '../src/auto.ts'
 import { INSTRUCTIONS_SECTION, PATCH_SECTION } from '../src/apply.ts'
 import { internals, openRun } from '../src/command.ts'
 import { RunDirectory } from '../src/directory.ts'
@@ -593,6 +593,57 @@ describe('memory care during a job', () => {
     })
     expect((await job('baseline run.json')).outcome).toMatchObject({ status: 'killed' })
     expect(new Set(server.unloads)).toEqual(new Set(['mock-policy']))
+  })
+
+  it('checks for a stop after the held-out results are stored and before the apply stage, and finishes on the next pass', async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-self-improve-stop-')))
+    roots.push(root)
+    const { repo } = await repository(root)
+    const runtime = useFakeRuntime()
+    fake = runtime
+    const ctx = new Context()
+    contexts.push(ctx)
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(RoleModel)
+    await ctx.plugin(LocalSubprocessRuntime)
+    const settings = {
+      runsDirectory: '.agents/self-improve',
+      scratchDirectory: join(root, 'scratch'),
+      gitTimeoutMs: 60_000,
+      processGraceMs: 3000,
+      maxOutputBytes: 65_536,
+      sandboxChecks: false,
+    }
+    const opened = await openRun(ctx, settings, join(repo, 'run.json'), () => {})
+    const controller = new AbortController()
+    const heldout = opened.run.heldout.bind(opened.run)
+    let measured = 0
+    // The stop lands once both ends of the trajectory have stored held-out results: no trial is left to notice it.
+    vi.spyOn(opened.run, 'heldout').mockImplementation(async (index, signal) => {
+      const result = await heldout(index, signal)
+      measured += 1
+      if (measured === 2) controller.abort(new Error('stopped by the memory guard: scripted'))
+      return result
+    })
+    const log: string[] = []
+    const pipeline = async (signal: AbortSignal): Promise<string> => await runPipeline({
+      opened,
+      calibrationRepeats: 1,
+      apply: { enabled: false },
+      log: line => log.push(line),
+      signal,
+    })
+    await expect(pipeline(controller.signal)).rejects.toThrow('stopped by the memory guard: scripted')
+    expect(log).toContain('stage 4/5, held-out tasks')
+    expect(log).not.toContain('stage 5/5, apply')
+    expect(await readAutoRecord(opened.directory)).toBeUndefined()
+    const launches = runtime.launches.length
+    log.length = 0
+    const summary = await pipeline(new AbortController().signal)
+    expect(log).toContain('stage 5/5, apply')
+    // The stopped pass's held-out results are reused, not measured again.
+    expect(runtime.launches.length).toBe(launches)
+    expect(await readAutoRecord(opened.directory)).toMatchObject({ summary })
   })
 })
 

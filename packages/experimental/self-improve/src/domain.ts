@@ -216,7 +216,6 @@ export class SuiteDomain implements SelfImproveDomain {
     if (task === undefined) throw new Error(`self-improve suite has no task ${taskId}`)
     const directory = this.trialDirectory(request.job, taskId, trial)
     const label = `${request.job} ${taskId}#${trial}`
-    await this.settings.care.beforeTrial(label, request.signal)
     await mkdir(this.settings.scratch, { recursive: true })
     const scratch = await mkdtemp(join(this.settings.scratch, 'trial-'))
     try {
@@ -245,6 +244,8 @@ export class SuiteDomain implements SelfImproveDomain {
         shutdownTimeoutMs: this.settings.shutdownTimeoutMs,
       }
       let record: TrialRecord
+      // Nothing runs between the two calls but the trial, so each resolved `beforeTrial` gets its `afterTrial`.
+      await this.settings.care.beforeTrial(label, request.signal)
       try {
         record = await runTrial(launch, task.prompt, request.signal)
       } finally {

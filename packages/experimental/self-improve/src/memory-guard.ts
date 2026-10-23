@@ -96,6 +96,7 @@ export class MemoryGuard {
   private low = 0
   private sampling = false
   private failureLogged = false
+  private disposed = false
 
   /**
    * @param deps - the limits, the sampler, the stop, and the log.
@@ -119,8 +120,9 @@ export class MemoryGuard {
     this.timer.unref()
   }
 
-  /** Stop sampling. */
+  /** Stop sampling; a sample already taken stops nothing. */
   dispose(): void {
+    this.disposed = true
     clearInterval(this.timer)
   }
 
@@ -134,6 +136,8 @@ export class MemoryGuard {
     this.sampling = true
     try {
       const sample = await this.deps.sample()
+      // The job settled while the sample was taken.
+      if (this.disposed) return
       const { maxSwapOutMiB, minFreeGiB } = this.deps.settings
       const swapped = sample.swapOutBytes - baseline.swapOutBytes
       this.low = sample.room < minFreeGiB * GIB ? this.low + 1 : 0

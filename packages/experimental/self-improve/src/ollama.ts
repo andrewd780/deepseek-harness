@@ -104,7 +104,10 @@ async function listed(route: LocalRoute, settings: UnloadSettings, fetchFn: Fetc
   const response = await fetchFn(`${route.origin}/api/ps`, { signal: AbortSignal.timeout(settings.timeoutMs) })
   const body: unknown = await response.json().catch(() => undefined)
   const models = at(body, 'models')
-  if (!response.ok || !Array.isArray(models)) throw new NotOllama(`${route.origin} does not answer /api/ps with a model listing`)
+  // Only a missing endpoint or an answer that is no listing marks a server that is not Ollama; any other failure,
+  // such as a proxy's 502, may pass, so the next unload tries again.
+  if (!response.ok && response.status !== 404) throw new Error(`GET ${route.origin}/api/ps answered ${response.status}`)
+  if (!Array.isArray(models)) throw new NotOllama(`${route.origin} does not answer /api/ps with a model listing`)
   const names = new Set([route.model, route.model.includes(':') ? route.model : `${route.model}:latest`])
   return models.some(entry => names.has(String(at(entry, 'name'))) || names.has(String(at(entry, 'model'))))
 }

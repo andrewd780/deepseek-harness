@@ -107,9 +107,9 @@ kind: "package-reference"
 
 在本地模型上运行时，模型、它的提示缓存和试验运行时会同时占用内存。三项设置防止任务把 macOS 推入换页；每一项都作用于所有 self-improve 任务，无论是否由定时计划启动。
 
-- **试验之间卸载**（`ollama.unloadBetweenTrials`）：当运行的策略补丁为试验的提供方给出一个指向 Ollama 服务器的 `baseURL` 时，任务会在每次试验之后请求该服务器卸载试验模型；当搜索角色使用同一提供方时，还会在每个角色阶段之后卸载搜索角色的模型。一次卸载就是向 `POST <origin>/api/generate` 发送 `{"model": <id>, "keep_alive": 0}`，其中 `<origin>` 是去掉 `/v1` 的 `baseURL`；随后任务最多等待 `ollama.unloadTimeoutSeconds` 秒，直到 `/api/ps` 不再列出该模型。服务器未列出的模型不会被处理，因此卸载绝不会加载模型，提示缓存也最多只保留一次试验的内容。任务输出会记录每次卸载及其耗时。卸载失败会被记录，运行继续；不以模型列表响应 `/api/ps` 的服务器不是 Ollama，任务不再向它发送卸载请求。
+- **试验之间卸载**（`ollama.unloadBetweenTrials`）：当运行的策略补丁为试验的提供方给出一个指向 Ollama 服务器的 `baseURL` 时，任务会在一次试验结束且没有其他试验仍在运行时请求该服务器卸载试验模型；当搜索角色使用同一提供方时，还会在每个角色阶段之后卸载搜索角色的模型。一次卸载就是向 `POST <origin>/api/generate` 发送 `{"model": <id>, "keep_alive": 0}`，其中 `<origin>` 是去掉 `/v1` 的 `baseURL`；随后任务最多等待 `ollama.unloadTimeoutSeconds` 秒，直到 `/api/ps` 不再列出该模型。服务器未列出的模型不会被处理，因此卸载绝不会加载模型，提示缓存最多只保留正在进行的试验的内容，在默认的 `trial.concurrency` 为 1 时就是一次试验。任务输出会记录每次卸载及其耗时，以及某个模型第一次未被加载的情况。卸载失败会被记录，运行继续；对 `/api/ps` 返回 404 或返回的不是模型列表的服务器不是 Ollama，任务不再向它发送卸载请求。
 - **内存守卫**（`memoryGuard`）：在 macOS 上，任务每 `memoryGuard.intervalSeconds` 秒采样一次 `vm_stat`。当自任务启动以来换出超过 `memoryGuard.maxSwapOutMiB` MiB，或空闲、非活跃和推测页内存连续 3 次采样都低于 `memoryGuard.minFreeGiB` GiB 时，守卫会停止任务。任务以 `killed` 结束，其详情以 `stopped by the memory guard:` 开头并写明触发的限制，任务输出记录同一行，并且不会应用任何内容：流水线在应用阶段之前会检查是否已被停止。运行保留它已保存的每次试验和每个阶段，因此下一次 `/self-improve` 会恢复它，并重新度量被停止的那次试验。无法读取 `vm_stat` 时，任务在没有守卫的情况下运行，其输出会说明这一点。
-- **新试验之前的余量**：开启守卫时，尚未保存结果的试验会等待空闲、非活跃和推测页内存达到 `schedule.minFreeMemoryGiB` GiB。余量不足时，若卸载已开启，任务会卸载运行的本地模型，记录这次等待，并每 `memoryGuard.intervalSeconds` 秒重新检查一次，最多等待 `memoryGuard.roomWaitMinutes` 分钟；超时后它以与守卫相同的方式停止，并写明它看到的余量。`schedule.minFreeMemoryGiB` 为 0 时跳过这次等待。
+- **新试验之前的余量**：开启守卫时，尚未保存结果的试验会等待空闲、非活跃和推测页内存达到 `schedule.minFreeMemoryGiB` GiB。余量不足时，任务会记录这次等待；若卸载已开启且没有其他试验正在运行，它会卸载运行的本地模型，然后立即重新检查，此后每 `memoryGuard.intervalSeconds` 秒检查一次，最多等待 `memoryGuard.roomWaitMinutes` 分钟；超时后它以与守卫相同的方式停止，并写明它看到的余量。等待期间某次采样失败时沿用上一次读数。无论运行的模型是否在本地，这次等待都会进行；`schedule.minFreeMemoryGiB` 为 0 时跳过它，等待开始前 `vm_stat` 就无法读取时也会跳过。
 
 定时计划自身决定是否启动定时任务的内存检查保持不变。
 

@@ -50,20 +50,27 @@ describe('JobCare', () => {
     ])
   })
 
-  it('logs a failed unload and a model still loaded without failing, and stops trying a server that is not Ollama', async () => {
+  it('logs a failed unload, a model still loaded, and once a model not loaded, and stops trying a server that is not Ollama', async () => {
     const { job, server, log } = await care({ unload: { timeoutMs: 60, pollMs: 10 } })
     server.mode = 'fail-unload'
     await job.afterTrial('t#0')
     server.mode = 'keep-loaded'
     await job.afterTrial('t#1')
-    server.loaded.delete('policy:latest')
+    // A listing that fails for a moment is a failed unload, not a sign the server is not Ollama.
+    server.mode = 'fail-listing'
     await job.afterTrial('t#2')
-    server.mode = 'not-ollama'
+    server.mode = 'ollama'
+    server.loaded.delete('policy:latest')
     await job.afterTrial('t#3')
+    await job.afterTrial('t#4')
+    server.mode = 'not-ollama'
+    await job.afterTrial('t#5')
     await job.afterRole('a review')
     expect(log).toEqual([
       `unloading policy:latest from ${server.origin} after trial t#0 failed: POST ${server.origin}/api/generate answered 500`,
       `policy:latest is still loaded at ${server.origin} 0.06 s after the unload request after trial t#1`,
+      `unloading policy:latest from ${server.origin} after trial t#2 failed: GET ${server.origin}/api/ps answered 502`,
+      `policy:latest was not loaded at ${server.origin} after trial t#3, so there was nothing to unload; the job notes this once`,
       `no unloads at ${server.origin}: ${server.origin} does not answer /api/ps with a model listing`,
     ])
     const thrown = new JobCare({
@@ -76,8 +83,23 @@ describe('JobCare', () => {
       // oxlint-disable-next-line typescript/prefer-promise-reject-errors -- the spec exercises a fetch that rejects with a non-Error.
       fetch: async () => await Promise.reject('offline'),
     })
-    await thrown.afterTrial('t#4')
-    expect(log.at(-1)).toBe('unloading m from http://x after trial t#4 failed: offline')
+    await thrown.afterTrial('t#6')
+    expect(log.at(-1)).toBe('unloading m from http://x after trial t#6 failed: offline')
+  })
+
+  it('unloads the trials\' model only once no trial is running, and does not unload for a wait beside a running trial', async () => {
+    const { job, server, log } = await care({ room: { minGiB: 22, waitMs: 60_000, pollMs: 10 }, rooms: [30, 10, 25] })
+    await job.beforeTrial('t#0')
+    await job.beforeTrial('t#1')
+    await job.afterTrial('t#0')
+    expect(server.unloads).toEqual([])
+    await job.afterTrial('t#1')
+    expect(server.unloads).toEqual(['policy:latest'])
+    expect(log).toEqual([
+      '10.0 GiB of memory is free before trial t#1, under 22 GiB; waiting up to 1 min',
+      '25.0 GiB of memory is free; trial t#1 starts',
+      expect.stringMatching(/^unloaded policy:latest from .+ after trial t#1 /) as string,
+    ])
   })
 
   it('does nothing with unloads off, without a route, or as the no-op care', async () => {
@@ -126,11 +148,15 @@ describe('JobCare', () => {
   })
 
   it('stops the job with the reason when the room does not come back in time', async () => {
-    const { job, stops } = await care({ room: { minGiB: 22, waitMs: 0, pollMs: 10 }, rooms: [10] })
+    // The reading after the unload decides, even with no time to wait.
+    const freed = await care({ room: { minGiB: 22, waitMs: 0, pollMs: 10 }, rooms: [10, 24] })
+    await freed.job.beforeTrial('base-1 alpha#0')
+    expect(freed.stops).toEqual([])
+    const { job, stops } = await care({ room: { minGiB: 22, waitMs: 0, pollMs: 10 }, rooms: [12, 10] })
     const reason = 'stopped by the memory guard: 10.0 GiB of memory was free before trial base-1 alpha#0 after waiting 0 min; 22 GiB needed'
     await expect(job.beforeTrial('base-1 alpha#0')).rejects.toThrow(reason)
     expect(stops).toEqual([reason])
-    const cancelled = await care({ room: { minGiB: 22, waitMs: 60_000, pollMs: 60_000 }, rooms: [10] })
+    const cancelled = await care({ room: { minGiB: 22, waitMs: 60_000, pollMs: 60_000 }, rooms: [10, 10] })
     const controller = new AbortController()
     const waiting = cancelled.job.beforeTrial('t#0', controller.signal)
     setTimeout(() => {
@@ -139,15 +165,21 @@ describe('JobCare', () => {
     await expect(waiting).rejects.toThrow()
   })
 
-  it('skips the room check when vm_stat cannot be read, noting it once', async () => {
-    const { job, log } = await care({ room: { minGiB: 22, waitMs: 60_000, pollMs: 10 }, rooms: [new Error('vm_stat: not found'), 10, new Error('busy')] })
+  it('skips the room check when vm_stat cannot be read, noting it once, and keeps waiting through a failed sample', async () => {
+    const { job, log } = await care({
+      room: { minGiB: 22, waitMs: 60_000, pollMs: 10 },
+      rooms: [new Error('vm_stat: not found'), 10, new Error('busy'), 25],
+    })
     await job.beforeTrial('t#0')
+    await job.afterTrial('t#0')
     await job.beforeTrial('t#1')
     expect(log).toEqual([
       'memory check before trials skipped: vm_stat: not found',
+      expect.stringMatching(/^unloaded policy:latest from .+ after trial t#0 /) as string,
       '10.0 GiB of memory is free before trial t#1, under 22 GiB; unloading the run\'s local models and waiting up to 1 min',
       expect.stringMatching(/^unloaded policy:latest/) as string,
       expect.stringMatching(/^unloaded role:latest/) as string,
+      '25.0 GiB of memory is free; trial t#1 starts',
     ])
     const text = await care({
       room: { minGiB: 22, waitMs: 60_000, pollMs: 10 },

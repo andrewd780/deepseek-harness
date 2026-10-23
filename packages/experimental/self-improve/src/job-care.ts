@@ -1,14 +1,14 @@
 /**
  * What a job does around each trial and each role stage to keep a local
- * model's memory in bounds. After every trial, and after every analyst,
- * proposer, or critic stage, it unloads the run's local model from its
- * Ollama server, so the server's prefix cache holds at most one trial or
- * stage; every unload, and every unload that failed, is a line of the job's
- * output, and a failed unload never stops the job. Before a fresh trial it
- * checks the room `vm_stat` reports; when the room is under the schedule's
- * `minFreeMemoryGiB`, it unloads the run's local models and waits for the
- * room up to `memoryGuard.roomWaitMinutes`, then stops the job with the
- * reason.
+ * model's memory in bounds. Once no trial is left running, and after every
+ * analyst, proposer, or critic stage, it unloads the run's local model from
+ * its Ollama server, so the server's prefix cache holds at most the trials
+ * in flight or one stage; every unload, and every unload that failed, is a
+ * line of the job's output, and a failed unload never stops the job. Before
+ * a fresh trial it checks the room `vm_stat` reports; when the room is under
+ * the schedule's `minFreeMemoryGiB`, it unloads the run's local models when
+ * no trial is running and waits for the room up to
+ * `memoryGuard.roomWaitMinutes`, then stops the job with the reason.
  *
  * @module @deepseek-ai/dsh-experimental-self-improve/job-care
  */
@@ -23,7 +23,8 @@ import type { Fetch, LocalRoute, UnloadSettings } from './ollama.ts'
 /** The calls a run makes around its trials and role stages. */
 export interface TrialCare {
   /**
-   * Before a trial that runs, not one whose result is stored.
+   * Right before a trial's runtime starts, for a trial whose result is not stored; once it resolves, `afterTrial`
+   * must follow.
    * @param label - the trial, such as `base-1a2b r0A alpha#0`.
    * @param signal - cancellation of the wait.
    * @returns once the trial may start.
@@ -31,7 +32,7 @@ export interface TrialCare {
    */
   beforeTrial(label: string, signal?: AbortSignal): Promise<void>
   /**
-   * After a trial ran, whatever its outcome; never rejects.
+   * After a trial's runtime ended, whatever its outcome; never rejects.
    * @param label - the trial.
    */
   afterTrial(label: string): Promise<void>
@@ -82,7 +83,10 @@ export interface JobCareDependencies {
 /** The care of one job. */
 export class JobCare implements TrialCare {
   private readonly notOllama = new Set<string>()
+  private readonly notLoaded = new Set<string>()
   private sampleFailed = false
+  /** Trials whose runtime started and has not ended; their model is unloaded only once none is left. */
+  private running = 0
 
   /**
    * @param deps - the run's local models, the unload bounds, the room wait, the sampler, the stop, and the log.
@@ -90,37 +94,49 @@ export class JobCare implements TrialCare {
   constructor(private readonly deps: JobCareDependencies) {}
 
   async beforeTrial(label: string, signal?: AbortSignal): Promise<void> {
+    await this.waitForRoom(label, signal)
+    this.running += 1
+  }
+
+  async afterTrial(label: string): Promise<void> {
+    this.running = Math.max(0, this.running - 1)
+    // A trial still running on the model would load it again at its next turn.
+    if (this.running === 0) await this.unload(this.deps.routes.trial, `after trial ${label}`)
+  }
+
+  async afterRole(stage: string): Promise<void> {
+    await this.unload(this.deps.routes.role, `after ${stage}`)
+  }
+
+  /** Wait until `vm_stat` reports the room a fresh trial needs, or stop the job. */
+  private async waitForRoom(label: string, signal: AbortSignal | undefined): Promise<void> {
     const room = this.deps.room
     if (room === undefined || room.minGiB === 0) return
     const needed = room.minGiB * 2 ** 30
     let current = await this.sample()
     if (current === undefined || current.room >= needed) return
     const minutes = room.waitMs / 60_000
-    const unloading = this.deps.unload === undefined ? '' : 'unloading the run\'s local models and '
-    this.deps.log(`${gib(current.room)} GiB of memory is free before trial ${label}, under ${room.minGiB} GiB; ${unloading}waiting up to ${minutes} min`)
-    await this.unload(this.deps.routes.trial, `to make room for trial ${label}`)
-    await this.unload(this.deps.routes.role, `to make room for trial ${label}`)
+    // Unloading under a running trial would only make that trial load the model again.
+    const unloads = this.deps.unload !== undefined && this.running === 0
+    this.deps.log(`${gib(current.room)} GiB of memory is free before trial ${label}, under ${room.minGiB} GiB; `
+      + `${unloads ? 'unloading the run\'s local models and ' : ''}waiting up to ${minutes} min`)
+    if (unloads) {
+      await this.unload(this.deps.routes.trial, `to make room for trial ${label}`)
+      await this.unload(this.deps.routes.role, `to make room for trial ${label}`)
+    }
     const deadline = Date.now() + room.waitMs
-    while (current.room < needed) {
+    for (;;) {
+      // A sample that fails keeps the last reading, so the wait still ends at its deadline.
+      current = await this.sample() ?? current
+      if (current.room >= needed) break
       if (Date.now() >= deadline) {
         const reason = `${MEMORY_STOP}: ${gib(current.room)} GiB of memory was free before trial ${label} after waiting ${minutes} min; ${room.minGiB} GiB needed`
         this.deps.stop(reason)
         throw new Error(reason)
       }
       await sleep(room.pollMs, undefined, { signal })
-      const next = await this.sample()
-      if (next === undefined) return
-      current = next
     }
     this.deps.log(`${gib(current.room)} GiB of memory is free; trial ${label} starts`)
-  }
-
-  async afterTrial(label: string): Promise<void> {
-    await this.unload(this.deps.routes.trial, `after trial ${label}`)
-  }
-
-  async afterRole(stage: string): Promise<void> {
-    await this.unload(this.deps.routes.role, `after ${stage}`)
   }
 
   /**
@@ -136,6 +152,10 @@ export class JobCare implements TrialCare {
         this.deps.log(`unloaded ${route.model} from ${route.origin} ${occasion} (${(outcome.milliseconds / 1000).toFixed(1)} s)`)
       } else if (outcome.status === 'still-loaded') {
         this.deps.log(`${route.model} is still loaded at ${route.origin} ${settings.timeoutMs / 1000} s after the unload request ${occasion}`)
+      } else if (!this.notLoaded.has(`${route.origin} ${route.model}`)) {
+        // Noted once: a model the server never lists, such as one under another name, would otherwise go unseen.
+        this.notLoaded.add(`${route.origin} ${route.model}`)
+        this.deps.log(`${route.model} was not loaded at ${route.origin} ${occasion}, so there was nothing to unload; the job notes this once`)
       }
     } catch (error) {
       if (error instanceof NotOllama) {

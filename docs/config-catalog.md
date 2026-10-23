@@ -1247,8 +1247,8 @@ export interface ScheduleSettings {
 /** How a job unloads a run's local model. */
 export interface OllamaSettings {
   /**
-   * Whether a job unloads the trials' model after each trial and the search roles' model after each role stage, when
-   * the run's policy patch routes the trials to a server that answers Ollama's `/api/ps`.
+   * Whether a job unloads the trials' model once a trial ends with no other trial running, and the search roles' model
+   * after each role stage, when the run's policy patch routes the trials to a server that answers Ollama's `/api/ps`.
    */
   readonly unloadBetweenTrials: boolean
   /** Bound on one unload: its requests and the wait for the model to leave the server's listing. */

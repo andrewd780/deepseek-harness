@@ -122,4 +122,28 @@ describe('MemoryGuard', () => {
     await thrown.start()
     expect(stops).toEqual(['memory guard off for this job: text'])
   })
+
+  it('stops nothing with a sample that returns after the guard was disposed', async () => {
+    let release: (sample: VmStatSample) => void = () => {}
+    const stops: string[] = []
+    let calls = 0
+    const memory = new MemoryGuard({
+      settings: { maxSwapOutMiB: 1, minFreeGiB: 0, intervalSeconds: 5 },
+      sample: async () => {
+        calls += 1
+        if (calls === 1) return { room: GIB, swapOutBytes: 0 }
+        return await new Promise<VmStatSample>((resolve) => {
+          release = resolve
+        })
+      },
+      stop: reason => stops.push(reason),
+      log: () => {},
+    })
+    await memory.start()
+    const pending = memory.check()
+    memory.dispose()
+    release({ room: GIB, swapOutBytes: 10 * MIB })
+    await pending
+    expect(stops).toEqual([])
+  })
 })

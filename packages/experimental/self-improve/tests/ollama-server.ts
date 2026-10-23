@@ -2,7 +2,7 @@ import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 
 /** How the stand-in answers. */
-export type StandInMode = 'ollama' | 'fail-unload' | 'not-ollama' | 'keep-loaded'
+export type StandInMode = 'ollama' | 'fail-unload' | 'fail-listing' | 'not-ollama' | 'keep-loaded'
 
 /** A stand-in for an Ollama server's `/api/ps` and unload requests, on a random local port. */
 export interface StandInOllama {
@@ -32,6 +32,11 @@ export async function standInOllama(models: readonly string[]): Promise<StandInO
     request.on('end', () => {
       if (stand.mode === 'not-ollama') {
         response.writeHead(404).end('not found')
+        return
+      }
+      if (stand.mode === 'fail-listing') {
+        // A proxy in front of the server answering for a moment.
+        response.writeHead(502).end('bad gateway')
         return
       }
       if (request.method === 'GET' && request.url === '/api/ps') {

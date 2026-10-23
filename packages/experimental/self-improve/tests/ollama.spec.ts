@@ -80,5 +80,10 @@ describe('unloadOllamaModel', () => {
     const listing = async (): Promise<Response> => new Response(JSON.stringify({ models: 'none' }))
     await expect(unloadOllamaModel({ origin: 'http://x', model: 'm' }, settings, listing)).rejects.toThrow(NotOllama)
     expect(new NotOllama('x').name).toBe('NotOllama')
+    // A listing that fails for a moment is an ordinary failure.
+    server.mode = 'fail-listing'
+    const failed = unloadOllamaModel({ origin: server.origin, model: 'qwen:latest' }, settings)
+    await expect(failed).rejects.toThrow(`GET ${server.origin}/api/ps answered 502`)
+    await expect(failed).rejects.not.toBeInstanceOf(NotOllama)
   })
 })

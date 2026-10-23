@@ -29,6 +29,7 @@
   "dependencies": {
     "@deepseek-ai/dsh-atomic-write": "workspace:*",
     "@deepseek-ai/dsh-brand": "workspace:*",
+    "@deepseek-ai/dsh-home-paths": "workspace:*",
     "@deepseek-ai/schemastery": "workspace:~",
     "yaml": "^2.9.0"
   },

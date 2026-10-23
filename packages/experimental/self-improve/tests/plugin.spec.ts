@@ -1,3 +1,4 @@
+import './isolated-home.ts'
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -69,7 +70,7 @@ async function harness(options: { readonly jobs?: 'present' | 'absent' | 'throws
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(RoleModel)
   await ctx.plugin(LocalSubprocessRuntime)
-  const fiber = ctx.plugin(SelfImprove, { scratchDirectory: options.scratch ?? join(root, 'scratch') })
+  const fiber = ctx.plugin(SelfImprove, { scratchDirectory: options.scratch ?? join(root, 'scratch'), home: join(root, 'home') })
   await fiber
   const run = async (line: string, signal = new AbortController().signal): Promise<CommandResult> => {
     const handler = handlers.get('self-improve')
@@ -86,11 +87,28 @@ async function harness(options: { readonly jobs?: 'present' | 'absent' | 'throws
 }
 
 describe('/self-improve', () => {
-  it('answers malformed command lines with the usage', async () => {
+  it('answers malformed command lines with the problem and every form of the command', async () => {
     const { run } = await harness()
-    for (const line of ['', 'dance run.json', 'status', 'round run.json 1 2', 'round run.json -1', 'round run.json x']) {
-      expect(await run(line)).toEqual({ kind: 'error', text: 'usage: /self-improve <status|baseline|calibrate|round|run|heldout> <spec.json> [number]' })
+    const problems: Record<string, string> = {
+      'dance run.json': '/self-improve has no action "dance"',
+      'round': '/self-improve round takes a run spec and an optional non-negative whole number',
+      'round run.json 1 2': '/self-improve round takes a run spec and an optional non-negative whole number',
+      'round run.json -1': '/self-improve round takes a run spec and an optional non-negative whole number',
+      'round run.json x': '/self-improve round takes a run spec and an optional non-negative whole number',
+      'auto now': '/self-improve auto takes no arguments; got now',
+      'status a.json b.json': '/self-improve status takes at most 1 argument; got a.json b.json',
+      'apply a.json b.json': '/self-improve apply takes at most 1 argument; got a.json b.json',
+      'undo everything': '/self-improve undo takes no arguments; got everything',
+      'schedule maybe': 'usage: /self-improve schedule on [HH:MM] | off | status',
+      'schedule off 03:00': 'usage: /self-improve schedule on [HH:MM] | off | status',
+      'schedule on 03:00 daily': 'usage: /self-improve schedule on [HH:MM] | off | status',
     }
+    for (const [line, problem] of Object.entries(problems)) {
+      expect(await run(line)).toEqual({ kind: 'error', text: `${problem}\n\n${SelfImprove.HELP}` })
+    }
+    expect(await run('schedule on 3am')).toEqual({ kind: 'error', text: 'self-improve schedule time 3am is not HH:MM in 24-hour local time' })
+    expect(await run('help')).toEqual({ kind: 'success', text: SelfImprove.HELP })
+    expect(SelfImprove.HELP.split('\n')).toHaveLength(16)
   })
 
   it('reports a spec it cannot compose', async () => {

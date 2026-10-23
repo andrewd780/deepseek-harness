@@ -35,7 +35,8 @@ export interface GitStoreSettings {
   readonly timeoutMs: number
 }
 
-const IDENTITY = ['-c', 'user.name=dsh self-improve', '-c', 'user.email=self-improve@dsh.invalid'] as const
+/** The fixed author of every commit a run makes, with signing off. */
+export const GIT_IDENTITY: readonly string[] = ['-c', 'user.name=dsh self-improve', '-c', 'user.email=self-improve@dsh.invalid', '-c', 'commit.gpgSign=false']
 
 /** Clear inherited repository and command-line configuration selectors, and never prompt. */
 const GIT_ENV: NodeJS.ProcessEnv = {
@@ -62,6 +63,28 @@ export async function repositoryRoot(run: ProcessRunner, directory: string, time
   const result = await run({ argv: ['git', 'rev-parse', '--show-toplevel'], cwd: directory, timeoutMs, signal, env: GIT_ENV })
   if (result.exitCode !== 0) throw new Error(`self-improve repository ${directory} is not inside a git repository: ${result.stderr.trim()}`)
   return result.stdout.trim()
+}
+
+/**
+ * Run one git command with hooks disabled and inherited repository selectors cleared.
+ * @param run - the git runner.
+ * @param args - git's arguments.
+ * @param cwd - the directory git runs in.
+ * @param timeoutMs - the command's deadline.
+ * @param signal - cancellation.
+ * @returns the command's standard output.
+ * @throws Error naming the command when it exits with any status but 0.
+ */
+export async function runGit(
+  run: ProcessRunner,
+  args: readonly string[],
+  cwd: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<string> {
+  const result = await run({ argv: ['git', '-c', 'core.hooksPath=/dev/null', ...args], cwd, timeoutMs, signal, env: GIT_ENV })
+  if (result.exitCode !== 0) throw new Error(`git ${args.join(' ')} failed with exit code ${result.exitCode}: ${result.stderr.trim()}`)
+  return result.stdout
 }
 
 /** A revision store over git branches and linked checkouts. */
@@ -129,7 +152,7 @@ export class GitRevisionStore implements RevisionStore {
       },
       commit: async (message: string, commitSignal?: AbortSignal) => {
         await this.git(['add', '--all', '--', evolved], root, commitSignal)
-        await this.git([...IDENTITY, 'commit', '--no-verify', '-m', message], root, commitSignal)
+        await this.git([...GIT_IDENTITY, 'commit', '--no-verify', '-m', message], root, commitSignal)
         return (await this.git(['rev-parse', 'HEAD'], root, commitSignal)).stdout.trim()
       },
     }

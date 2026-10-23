@@ -573,7 +573,12 @@ export class SelfImproveRun {
     return diff
   }
 
-  private async noiseBand(): Promise<number> {
+  /**
+   * δ in effect: the spec's fixed value, or the stored calibration.
+   * @returns the noise band.
+   * @throws Error when the spec calibrates δ and the run has no calibration.
+   */
+  async noiseBand(): Promise<number> {
     if (this.settings.delta !== undefined) return this.settings.delta
     const calibration = await this.roles.directory.readCalibration()
     if (calibration === undefined) throw new Error('self-improve has no noise band: configure delta or calibrate the baseline')

@@ -48,6 +48,11 @@ async function setup(overrides: Partial<SuiteDomainSettings> = {}, overlay: stri
   }
   const runCommand = vi.fn(async (_argv: readonly string[], cwd: string) => ({ passed: existsSync(join(cwd, 'seed.txt')) }))
   const checkRunner = vi.fn((_area: CheckArea): CommandRunner => runCommand)
+  const care = {
+    beforeTrial: vi.fn(async (_label: string) => {}),
+    afterTrial: vi.fn(async (_label: string) => {}),
+    afterRole: vi.fn(async () => {}),
+  }
   const homes: {
     readonly agents: string
     readonly skill: string
@@ -80,11 +85,12 @@ async function setup(overrides: Partial<SuiteDomainSettings> = {}, overlay: stri
     shutdownTimeoutMs: 5_000,
     concurrency: 2,
     checkRunner,
+    care,
     maxTraceCharacters: 500,
     maxPromptGrowth: 0.1,
     ...overrides,
   }
-  return { root, checkout, suite, runCommand, checkRunner, homes, settings, domain: new SuiteDomain(settings) }
+  return { root, checkout, suite, runCommand, checkRunner, care, homes, settings, domain: new SuiteDomain(settings) }
 }
 
 const request = (root: string, job: string, tasks: string[], trials = 2) => ({
@@ -109,7 +115,7 @@ describe('SuiteDomain', () => {
   })
 
   it('measures each trial in a fresh runtime with the evolved directory and scores it by the checks', async () => {
-    const { domain, checkout, homes, runCommand, checkRunner, root } = await setup()
+    const { domain, checkout, homes, runCommand, checkRunner, care, root } = await setup()
     const result = await domain.evaluate(request(checkout, 'j1', ['hello', 'other']))
     expect(result.perTask.get(TaskId('hello'))?.rewards).toEqual([1, 1])
     expect(result.perTask.get(TaskId('other'))?.rewards).toEqual([0, 0])
@@ -129,8 +135,14 @@ describe('SuiteDomain', () => {
       { check: 'command node check.mjs', passed: true },
     ] })
     const launches = fake?.launches.length
+    // Each fresh trial was preceded by the room check and followed by an unload, labelled with its job, task, and trial.
+    const labels = ['j1 hello#0', 'j1 hello#1', 'j1 other#0', 'j1 other#1']
+    expect(care.beforeTrial.mock.calls.map(([label]) => label).sort()).toEqual(labels)
+    expect(care.afterTrial.mock.calls.map(([label]) => label).sort()).toEqual(labels)
     expect(await domain.evaluate(request(checkout, 'j1', ['hello', 'other']))).toEqual(result)
     expect(fake?.launches.length).toBe(launches)
+    // A stored trial needs neither.
+    expect(care.beforeTrial).toHaveBeenCalledTimes(4)
     const trace = await domain.renderTrace(EvaluationJobId('j1'), TaskId('hello'), 0)
     expect(trace).toContain('[assistant] all done')
     expect(trace).toContain('[check passed] file seed.txt seed')
@@ -180,8 +192,10 @@ describe('SuiteDomain', () => {
   })
 
   it('counts a failed runtime as a missing trial, runs it again, and reports it from the smoke check', async () => {
-    const { domain, checkout, root } = await setup({ environment: () => ({ FAKE_INIT_ERROR: '1' }) }, undefined)
+    const { domain, checkout, root, care } = await setup({ environment: () => ({ FAKE_INIT_ERROR: '1' }) }, undefined)
     const smoke = await domain.smoke(request(checkout, 's1', ['other'], 1))
+    // A trial whose runtime failed is still followed by an unload.
+    expect(care.afterTrial).toHaveBeenCalledWith('s1 other#0')
     expect(smoke).toEqual({ ok: false, detail: '1 of 1 smoke trial(s) produced no result: other#0: scripted init failure' })
     expect(fake?.launches[0]?.patches).toEqual(['/policy.patch.yml'])
     expect(existsSync(join(root, 'run', 'trials', 's1', 'other', '0', 'result.json'))).toBe(false)

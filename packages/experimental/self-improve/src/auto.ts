@@ -219,6 +219,8 @@ export async function runPipeline(options: PipelineOptions): Promise<string> {
   log('stage 4/5, held-out tasks')
   const after = await run.heldout(undefined, signal)
   const before = final.commit === base.commit ? after : await run.heldout(0, signal)
+  // A job stopped by a kill or by the memory guard never reaches the apply.
+  signal.throwIfAborted()
   log('stage 5/5, apply')
   const applied = await applyStage(opened, options.apply, base, final, signal)
   log(applied.line)

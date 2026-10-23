@@ -84,6 +84,7 @@ async function harness(options: {
     scratchDirectory: options.scratch ?? join(root, 'scratch'),
     home: join(root, 'home'),
     sandboxChecks: options.sandboxChecks ?? process.platform === 'darwin',
+    memoryGuard: { enabled: false },
   })
   await fiber
   const run = async (line: string, signal = new AbortController().signal): Promise<CommandResult> => {

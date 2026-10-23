@@ -14,7 +14,7 @@ import { registerSelfImproveCommand } from './command.ts'
 import type { CommandSettings } from './command.ts'
 
 export { HELP, openRun, registerSelfImproveCommand } from './command.ts'
-export type { AutoSettings, CommandSettings, OpenedRun } from './command.ts'
+export type { AutoSettings, CommandSettings, OllamaSettings, OpenedRun } from './command.ts'
 export * from './apply.ts'
 export * from './auto.ts'
 export * from './auto-schedule.ts'
@@ -31,9 +31,12 @@ export * from './evidence.ts'
 export * from './evolved-directory.ts'
 export * from './git.ts'
 export * from './history.ts'
+export * from './job-care.ts'
 export * from './overlay.ts'
 export * from './loop.ts'
+export * from './memory-guard.ts'
 export * from './model.ts'
+export * from './ollama.ts'
 export * from './process.ts'
 export * from './roles.ts'
 export * from './schedule.ts'
@@ -102,6 +105,26 @@ export interface Config {
   home?: string
   /** The patch layer that applies add overlay entries to; empty is `<home>/cordis.patch.yml`, which every profile applies last. */
   overlayPatch?: string
+  /** How a job unloads a run's local model from its Ollama server. */
+  ollama?: {
+    /** Whether a job unloads the trials' model after each trial and the roles' model after each role stage, on an Ollama server. */
+    unloadBetweenTrials?: boolean
+    /** Bound on one unload, in seconds. */
+    unloadTimeoutSeconds?: number
+  }
+  /** The memory guard of every job on macOS, and the room a fresh trial waits for. */
+  memoryGuard?: {
+    /** Whether jobs run under the guard and fresh trials wait for `schedule.minFreeMemoryGiB` of room. */
+    enabled?: boolean
+    /** Most swap-outs since a job started, in MiB, before the guard stops it. */
+    maxSwapOutMiB?: number
+    /** Least room, in GiB; three samples in a row under it stop the job. */
+    minFreeGiB?: number
+    /** Seconds between two `vm_stat` samples. */
+    intervalSeconds?: number
+    /** Longest wait for room before a fresh trial, in minutes, after unloading the run's local models. */
+    roomWaitMinutes?: number
+  }
 }
 
 /** Configuration schema. */
@@ -132,6 +155,17 @@ export const Config: z<Config, CommandSettings> = z.object({
   }),
   home: z.string().default(''),
   overlayPatch: z.string().default(''),
+  ollama: z.object({
+    unloadBetweenTrials: z.boolean().default(true),
+    unloadTimeoutSeconds: z.number().min(1).default(30),
+  }),
+  memoryGuard: z.object({
+    enabled: z.boolean().default(true),
+    maxSwapOutMiB: z.number().min(0).default(256),
+    minFreeGiB: z.number().min(0).default(2),
+    intervalSeconds: z.number().min(0.01).default(5),
+    roomWaitMinutes: z.number().min(0).default(10),
+  }),
 })
 
 /**

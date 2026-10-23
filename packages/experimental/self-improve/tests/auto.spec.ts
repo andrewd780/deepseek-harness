@@ -16,15 +16,19 @@ import { RunDirectory } from '../src/directory.ts'
 import * as SelfImprove from '../src/index.ts'
 import { useFakeRuntime } from './fake-runtime.ts'
 import * as RoleModel from './fixtures/role-model.ts'
+import { standInOllama } from './ollama-server.ts'
+import type { StandInOllama } from './ollama-server.ts'
 import { repository } from './repository.ts'
 
 const roots: string[] = []
 const contexts: Context[] = []
+const servers: StandInOllama[] = []
 let fake: ReturnType<typeof useFakeRuntime> | undefined
 const defaults = { ...internals }
 
 afterEach(async () => {
   for (const ctx of contexts.splice(0)) await ctx.fiber.dispose()
+  for (const server of servers.splice(0)) await server.close()
   fake?.restore()
   fake = undefined
   Object.assign(internals, defaults)
@@ -61,6 +65,8 @@ interface HarnessOptions {
   readonly config?: Record<string, unknown>
   /** Files committed into the fixture's evolved directory before the run starts. */
   readonly evolved?: Readonly<Record<string, string>>
+  /** The fixture's frozen policy patch, in place of an empty one. */
+  readonly policy?: string
   readonly jobs?: 'present' | 'absent' | 'throws'
   /** A profile context the launcher would provide. */
   readonly profile?: { readonly home: string; readonly patchPath: string }
@@ -72,11 +78,12 @@ async function harness(options: HarnessOptions = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-self-improve-auto-')))
   roots.push(root)
   const { repo, git } = await repository(root, options.spec)
-  if (options.evolved !== undefined) {
-    for (const [path, content] of Object.entries(options.evolved)) {
+  if (options.evolved !== undefined || options.policy !== undefined) {
+    for (const [path, content] of Object.entries(options.evolved ?? {})) {
       await mkdir(join(repo, 'harness', 'evolved', path, '..'), { recursive: true })
       await writeFile(join(repo, 'harness', 'evolved', path), content)
     }
+    if (options.policy !== undefined) await writeFile(join(repo, 'policy.patch.yml'), options.policy)
     await git('add', '.')
     await git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgSign=false', 'commit', '-q', '-m', 'evolved')
   }
@@ -114,6 +121,8 @@ async function harness(options: HarnessOptions = {}) {
   await ctx.plugin(SelfImprove, {
     scratchDirectory: join(root, 'scratch'),
     sandboxChecks: process.platform === 'darwin',
+    // The guard and the room wait read this machine's vm_stat unless a test scripts it and turns them on.
+    memoryGuard: { enabled: false },
     ...options.home === false ? {} : { home },
     ...options.config,
     auto: { directory: repo, ...options.config?.['auto'] as object },
@@ -401,7 +410,7 @@ describe('/self-improve in the automatic mode', () => {
   it('starts the automatic pipeline from the schedule\'s timer once memory allows it', async () => {
     let room = 10 * 2 ** 30
     internals.now = () => fixedNow
-    internals.memory = async () => room
+    internals.vmStat = async () => ({ room, swapOutBytes: 0 })
     const { run, started, home, repo } = await harness({ config: { schedule: { enabled: true, time: '03:00', checkIntervalMinutes: 0.001 } } })
     const spec = JSON.parse(await readFile(join(repo, 'run.json'), 'utf8')) as Record<string, unknown>
     await writeFile(join(repo, 'hang.json'), JSON.stringify({ ...spec, name: 'hang', trial: { policyPatches: ['policy.patch.yml'], provider: 'mock', model: 'm', env: { FAKE_HANG_PROMPT: '1' }, timeoutMs: 600_000 } }))
@@ -423,10 +432,10 @@ describe('/self-improve in the automatic mode', () => {
     internals.now = () => fixedNow
     const reached = Promise.withResolvers<undefined>()
     const gate = Promise.withResolvers<undefined>()
-    internals.memory = async () => {
+    internals.vmStat = async () => {
       reached.resolve(undefined)
       await gate.promise
-      return 30 * 2 ** 30
+      return { room: 30 * 2 ** 30, swapOutBytes: 0 }
     }
     const { run, started, home } = await harness({ config: { schedule: { enabled: true, time: '03:00', checkIntervalMinutes: 0.001 } } })
     expect((await run('help')).text).toContain('This session now owns scheduled runs.')
@@ -441,8 +450,149 @@ describe('/self-improve in the automatic mode', () => {
   it('reads the clock and vm_stat by default', async () => {
     const before = Date.now()
     expect(defaults.now().getTime()).toBeGreaterThanOrEqual(before)
-    const vmStat = 'Mach Virtual Memory Statistics: (page size of 4096 bytes)\nPages free: 1.\nPages inactive: 2.\nPages speculative: 3.\n'
-    expect(await defaults.memory(async () => ({ exitCode: 0, stdout: vmStat, stderr: '' }))).toBe(6 * 4096)
+    const vmStat = 'Mach Virtual Memory Statistics: (page size of 4096 bytes)\nPages free: 1.\nPages inactive: 2.\nPages speculative: 3.\nSwapouts: 5.\n'
+    expect(await defaults.vmStat(async () => ({ exitCode: 0, stdout: vmStat, stderr: '' }))).toEqual({ room: 6 * 4096, swapOutBytes: 5 * 4096 })
+  })
+})
+
+const GIB = 2 ** 30
+const MIB = 2 ** 20
+
+/** A frozen policy that names a stand-in Ollama server as the trials' provider. */
+const ollamaPolicy = (origin: string): string => `- id: llm-pi-ai\n  config:\n    providers:\n      mock:\n        baseURL: ${origin}/v1\n`
+
+/** A stand-in Ollama server with the fixture's trial and role models loaded. */
+async function standIn(): Promise<StandInOllama> {
+  const server = await standInOllama(['mock-policy:latest', 'mock-role:latest'])
+  servers.push(server)
+  return server
+}
+
+/** Script vm_stat: GiB of room and MiB swapped out so far, which a test changes while a job runs. */
+function scriptVmStat(initial: { room: number; swapMiB: number }): { room: number; swapMiB: number } {
+  const memory = { ...initial }
+  internals.vmStat = async () => ({ room: memory.room * GIB, swapOutBytes: memory.swapMiB * MIB })
+  return memory
+}
+
+const guarded = { memoryGuard: { enabled: true, intervalSeconds: 0.02 } }
+const noRoomWait = { memoryGuard: { enabled: true, intervalSeconds: 0.02, roomWaitMinutes: 0 } }
+
+describe('memory care during a job', () => {
+  it('unloads the trials\' model after every trial and the search roles\' model after every role stage, and records each unload', async () => {
+    const server = await standIn()
+    const { job } = await harness({ policy: ollamaPolicy(server.origin) })
+    const { outcome, output } = await job('')
+    expect(outcome).toMatchObject({ status: 'completed' })
+    const lines = output.split('\n')
+    const launches = fake?.launches.length ?? 0
+    expect(launches).toBe(7)
+    expect(lines.filter(line => new RegExp(`^unloaded mock-policy from ${server.origin} after trial \\S+ (alpha|beta|gamma)#0 \\(\\d+\\.\\d s\\)$`).test(line))).toHaveLength(launches)
+    expect(lines.flatMap(line => new RegExp(`^unloaded mock-role from ${server.origin} after (.+) \\(`).exec(line)?.[1] ?? [])).toEqual([
+      'the analysis of round 1',
+      'the draft of candidate A in round 1',
+      'a review',
+    ])
+    expect(server.unloads.toSorted()).toEqual([...Array<string>(launches).fill('mock-policy'), 'mock-role', 'mock-role', 'mock-role'])
+  })
+
+  it('sends no unload when unloadBetweenTrials is off', async () => {
+    const server = await standIn()
+    const { job } = await harness({ policy: ollamaPolicy(server.origin), config: { ollama: { unloadBetweenTrials: false } } })
+    expect((await job('baseline run.json')).outcome).toMatchObject({ status: 'completed' })
+    expect(server.unloads).toEqual([])
+  })
+
+  it('logs an unload that fails and finishes the job', async () => {
+    const server = await standIn()
+    server.mode = 'fail-unload'
+    const { job } = await harness({ policy: ollamaPolicy(server.origin) })
+    const { outcome, output } = await job('baseline run.json')
+    expect(outcome).toMatchObject({ status: 'completed', result: expect.stringMatching(/^baseline \S+: score 0\.5000/) as string })
+    const failures = output.split('\n').filter(line => line.startsWith('unloading mock-policy from '))
+    expect(failures).toHaveLength(2)
+    expect(failures[0]).toMatch(new RegExp(`^unloading mock-policy from ${server.origin} after trial \\S+ (alpha|beta)#0 failed: POST ${server.origin}/api/generate answered 500$`))
+  })
+
+  it('stops a job whose swap-outs grow past the limit, and resumes the run in a later job', async () => {
+    const memory = scriptVmStat({ room: 30, swapMiB: 1000 })
+    let launches = 0
+    // The third trial is the round's smoke trial, after the baseline is measured.
+    fake = useFakeRuntime(() => {
+      launches += 1
+      if (launches === 3) memory.swapMiB = 1300
+    })
+    const { job, run } = await harness({ config: guarded })
+    const reason = 'stopped by the memory guard: 300 MiB swapped out since the job started, over the 256 MiB limit'
+    const stopped = await job('')
+    expect(stopped.outcome).toEqual({ status: 'killed', detail: reason })
+    expect(stopped.output).toContain(`${reason}\n`)
+    expect((await run('status')).text).toContain('generation 1 (run loader): stopped before it finished; /self-improve resumes it.')
+    // The next job measures from its own start, so the swap-outs before it do not count.
+    const resumed = await job('')
+    expect(resumed.outcome).toMatchObject({ status: 'completed' })
+    expect(resumed.output).toContain('stage 1/5, baseline: already measured\n')
+    expect(resumed.output).toContain('stage 5/5, apply\n')
+  })
+
+  it('never applies a result whose job the guard stopped, and applies it when the run resumes', async () => {
+    const memory = scriptVmStat({ room: 30, swapMiB: 0 })
+    let launches = 0
+    // The seventh trial is the last held-out one, the stage before the apply.
+    fake = useFakeRuntime(() => {
+      launches += 1
+      if (launches === 7) memory.swapMiB = 512
+    })
+    const { job, home, repo } = await harness({ config: guarded })
+    const stopped = await job('')
+    expect(stopped.outcome).toEqual({ status: 'killed', detail: 'stopped by the memory guard: 512 MiB swapped out since the job started, over the 256 MiB limit' })
+    expect(stopped.output).toContain('stage 4/5, held-out tasks\n')
+    expect(stopped.output).not.toContain('stage 5/5, apply')
+    await expect(readFile(join(home, 'AGENTS.md'), 'utf8')).rejects.toThrow(/ENOENT/)
+    expect(await readAutoRecord(runDirectory(repo))).toBeUndefined()
+    const resumed = await job('')
+    expect(resumed.outcome).toMatchObject({ status: 'completed', result: expect.stringContaining('Applied to your dsh configuration') as string })
+    expect(await readFile(join(home, 'AGENTS.md'), 'utf8')).toContain('Work carefully.')
+  })
+
+  it('stops a job when free memory stays under minFreeGiB for three samples in a row', async () => {
+    const memory = scriptVmStat({ room: 30, swapMiB: 0 })
+    fake = useFakeRuntime(() => {
+      memory.room = 1
+    })
+    const { job } = await harness({ config: guarded })
+    const { outcome } = await job('baseline run.json')
+    expect(outcome).toEqual({
+      status: 'killed',
+      detail: 'stopped by the memory guard: 1.0 GiB of free, inactive, and speculative memory for 3 samples in a row, under the 2 GiB limit',
+    })
+  })
+
+  it('unloads and waits for room before a fresh trial, then stops the job when the room does not come back', async () => {
+    scriptVmStat({ room: 10, swapMiB: 0 })
+    const server = await standIn()
+    const { job } = await harness({ policy: ollamaPolicy(server.origin), config: noRoomWait })
+    const { outcome, output } = await job('baseline run.json')
+    const trial = String.raw`trial \S+ (alpha|beta)#0`
+    expect(outcome).toEqual({
+      status: 'killed',
+      detail: expect.stringMatching(new RegExp(`^stopped by the memory guard: 10\\.0 GiB of memory was free before ${trial} after waiting 0 min; 22 GiB needed$`)) as string,
+    })
+    expect(output).toMatch(new RegExp(`^10\\.0 GiB of memory is free before ${trial}, under 22 GiB; unloading the run's local models and waiting up to 0 min$`, 'm'))
+    expect(server.unloads.slice(0, 2)).toEqual(['mock-policy', 'mock-role'])
+    expect(fake?.launches).toEqual([])
+  })
+
+  it('leaves the search roles\' model alone when the roles use another provider than the trials', async () => {
+    scriptVmStat({ room: 10, swapMiB: 0 })
+    const server = await standIn()
+    const { job } = await harness({
+      spec: { roles: { provider: 'listed', model: 'listed-model' } },
+      policy: ollamaPolicy(server.origin),
+      config: noRoomWait,
+    })
+    expect((await job('baseline run.json')).outcome).toMatchObject({ status: 'killed' })
+    expect(new Set(server.unloads)).toEqual(new Set(['mock-policy']))
   })
 })
 

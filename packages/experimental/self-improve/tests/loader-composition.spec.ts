@@ -25,16 +25,21 @@ import ToolRuntime from '@deepseek-ai/dsh-tools'
 import WorkingDirectoryService from '@deepseek-ai/dsh-working-directory'
 import * as SelfImprove from '../src/index.ts'
 import { useFakeRuntime } from './fake-runtime.ts'
+import { standInOllama } from './ollama-server.ts'
+import type { StandInOllama } from './ollama-server.ts'
 import { repository } from './repository.ts'
 import * as RoleModel from './fixtures/role-model.ts'
 
 let context: Context | undefined
 let fake: ReturnType<typeof useFakeRuntime> | undefined
+let ollama: StandInOllama | undefined
 let root: string | undefined
 
 afterEach(async () => {
   await context?.fiber.dispose()
   context = undefined
+  await ollama?.close()
+  ollama = undefined
   fake?.restore()
   fake = undefined
   if (root !== undefined) await rm(root, { recursive: true, force: true })
@@ -72,6 +77,9 @@ async function boot(base: string, selfImproveConfig: readonly string[], cwd: str
         `    scratchDirectory: '${join(base, 'scratch')}'`,
         // Checks run under the real sandbox-exec where it exists.
         `    sandboxChecks: ${String(process.platform === 'darwin')}`,
+        // The guard and the room wait would read this machine's vm_stat.
+        '    memoryGuard:',
+        '      enabled: false',
         ...selfImproveConfig.map(line => `    ${line}`),
       ]
       : [],
@@ -143,11 +151,15 @@ describe('/self-improve through real Loader composition', () => {
     root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-self-improve-loader-auto-')))
     const home = join(root, 'home')
     fake = useFakeRuntime()
+    // The starter policy names this stand-in as the trials' Ollama server, so each trial and role stage unloads from it.
+    const stand = await standInOllama(['mock-role:latest'])
+    ollama = stand
     const { ctx, agent, command } = await boot(root, [
       `home: '${home}'`,
       'auto:',
       '  provider: mock',
       '  model: mock-role',
+      `  baseUrl: '${stand.origin}/v1'`,
       '  rounds: 1',
     ], root)
 
@@ -189,6 +201,15 @@ describe('/self-improve through real Loader composition', () => {
     // Every trial ran the starter suite's workspaces against the frozen policy patch alone.
     expect(fake.launches).toHaveLength(6 + 6 + 1 + 6 + 2 + 2)
     expect(new Set(fake.launches.map(launch => launch.patches?.join(',')))).toEqual(new Set([join(home, 'self-improve', 'auto', 'policy.patch.yml')]))
+    // Each trial, and each search role's stage, was followed by an unload, which the job's output records.
+    const unloads = output.split('\n').filter(line => line.startsWith(`unloaded mock-role from ${stand.origin} after `))
+    expect(unloads.filter(line => line.includes(' after trial '))).toHaveLength(fake.launches.length)
+    expect(unloads.filter(line => !line.includes(' after trial ')).map(line => /after (.+) \(/.exec(line)?.[1])).toEqual([
+      'the analysis of round 1',
+      'the draft of candidate A in round 1',
+      'a review',
+    ])
+    expect(stand.unloads).toEqual(unloads.map(() => 'mock-role'))
     const status = (await command('/self-improve status'))?.text ?? ''
     expect(status).toContain(`Automatic run in ${join(home, 'self-improve', 'auto')}, generation 1 (run auto): finished; /self-improve starts the next generation from its result.`)
     expect(status).toContain('Last summary (')

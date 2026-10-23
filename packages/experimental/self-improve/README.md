@@ -92,7 +92,26 @@ A due check that cannot start records why in `<home>/self-improve/schedule.json`
       minFreeMemoryGiB: 22
       windowHours: 0
       checkIntervalMinutes: 5
+    ollama:
+      unloadBetweenTrials: true
+      unloadTimeoutSeconds: 30
+    memoryGuard:
+      enabled: true
+      maxSwapOutMiB: 256
+      minFreeGiB: 2
+      intervalSeconds: 5
+      roomWaitMinutes: 10
 ```
+
+### Keep a job's memory in bounds
+
+A run on a local model holds the model, its prompt cache, and the trial runtimes in memory at once. Three settings keep a job from pushing macOS into swap; each applies to every self-improve job, scheduled or not.
+
+- **Unload between trials** (`ollama.unloadBetweenTrials`): when the run's policy patches give the trials' provider a `baseURL` on an Ollama server, the job asks that server to unload the trials' model after each trial, and the search roles' model after each role stage when the roles use the same provider. An unload is `POST <origin>/api/generate` with `{"model": <id>, "keep_alive": 0}`, where `<origin>` is the `baseURL` without its `/v1`; the job then waits up to `ollama.unloadTimeoutSeconds` seconds for `/api/ps` to stop listing the model. A model the server does not list is left alone, so an unload never loads one, and the prompt cache never holds more than one trial's worth. The job's output records each unload and how long it took. An unload that fails is recorded and the run continues; a server that does not answer `/api/ps` with a model listing is not Ollama, and the job sends it no further unloads.
+- **Memory guard** (`memoryGuard`): on macOS, the job samples `vm_stat` every `memoryGuard.intervalSeconds` seconds. When more than `memoryGuard.maxSwapOutMiB` MiB were swapped out since the job started, or free, inactive, and speculative memory stays under `memoryGuard.minFreeGiB` GiB for 3 samples in a row, the guard stops the job. The job ends `killed` with a detail that begins `stopped by the memory guard:` and names the limit, its output records the same line, and nothing is applied: the pipeline checks for a stop before its apply stage. The run keeps every trial and stage it stored, so the next `/self-improve` resumes it and measures the stopped trial again. Where `vm_stat` cannot be read, the job runs unguarded and its output says so.
+- **Room before a fresh trial**: with the guard on, a trial that is not already stored waits for `schedule.minFreeMemoryGiB` GiB of free, inactive, and speculative memory. When there is less, the job unloads the run's local models when unloads are on, records the wait, and checks again every `memoryGuard.intervalSeconds` seconds for up to `memoryGuard.roomWaitMinutes` minutes; then it stops the same way as the guard, with the room it found. A `schedule.minFreeMemoryGiB` of 0 skips the wait.
+
+The schedule's own memory check, which decides whether a scheduled job starts, is unchanged.
 
 ### Prepare a run
 
@@ -157,6 +176,7 @@ The edit history, the prune set of components whose recent edits gained nothing,
 | [`src/auto.ts`](src/auto.ts), [`src/bootstrap.ts`](src/bootstrap.ts), [`src/template.ts`](src/template.ts) | The automatic pipeline, its generations and summary, and the starter run it creates |
 | [`src/apply.ts`](src/apply.ts) | Apply, backups, and undo against the live configuration |
 | [`src/auto-schedule.ts`](src/auto-schedule.ts) | The daily schedule, its checks, and its state file |
+| [`src/job-care.ts`](src/job-care.ts), [`src/ollama.ts`](src/ollama.ts), [`src/memory-guard.ts`](src/memory-guard.ts) | Unloads after trials and role stages, the room wait before a fresh trial, and the memory guard that stops a job |
 | [`src/loop.ts`](src/loop.ts) | Baseline, calibration, rounds, and held-out measurement |
 | [`src/schedule.ts`](src/schedule.ts), [`src/history.ts`](src/history.ts), [`src/selection.ts`](src/selection.ts), [`src/calibrate.ts`](src/calibrate.ts) | Edit budget, history and directives, admissibility, noise band |
 | [`src/critic.ts`](src/critic.ts), [`src/roles.ts`](src/roles.ts), [`src/model.ts`](src/model.ts) | Reviewer, analyst, proposer, and their model requests |
@@ -341,6 +361,7 @@ A changed instructions section or skill catalog changes the system-level prefix 
 - **Sequential candidates** — a round drafts and measures its candidates one after another; `trial.concurrency` parallelizes trials within one measurement.
 - **Deferred reference parts** — per-task digests, the prediction scoreboard, and re-adjudication of stored rounds are not implemented.
 - **Command only** — runs start from `/self-improve` or the schedule it turns on, in compositions with background jobs; there is no model tool.
+- **Memory care knows only Ollama and macOS** — unloads go only to a server that answers Ollama's `/api/ps`, for the trials' model and, when the roles use the trials' provider, the search roles' model on the same server; the roles' route in your dsh configuration is not read. The guard and the room wait read `vm_stat`, so elsewhere a job runs unguarded.
 - **Scheduled runs need their owner** — a scheduled job belongs to its owner session, so the schedule waits while that session has no live agent in the dsh process, and disposing that agent cancels a running job.
 - **No recorded-session snapshot** — the command's transcript, its `command/run` and `command/done` pair, has no recorded-session snapshot; the Web snapshot lane can record one. `tests/loader-composition.spec.ts` covers the command through a real composition, including the automatic pipeline on the starter run, and `tests/real-runtime.e2e.ts` measures each trial in a fresh `dsh` runtime against a local stand-in model endpoint.
 

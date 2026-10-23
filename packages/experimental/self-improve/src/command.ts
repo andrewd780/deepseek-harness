@@ -43,7 +43,7 @@ import { undoLatestApply, undoneCommits } from './apply.ts'
 import type { ApplyResult, LiveConfiguration } from './apply.ts'
 import { applyRevision, generations, latestAccepted, nextGeneration, nextStartPoint, readAutoRecord, runPipeline } from './auto.ts'
 import type { Generation } from './auto.ts'
-import { AutoScheduler, isScheduleTime, startScheduleTimer, vmStatMemory } from './auto-schedule.ts'
+import { AutoScheduler, isScheduleTime, startScheduleTimer } from './auto-schedule.ts'
 import type { ScheduleSettings } from './auto-schedule.ts'
 import { ensureStarterRun, RUN_SPEC_FILE } from './bootstrap.ts'
 import { EvaluationJobId } from './brand.ts'
@@ -52,8 +52,13 @@ import { RunDirectory } from './directory.ts'
 import type { Revision } from './directory.ts'
 import { SuiteDomain } from './domain.ts'
 import { GitRevisionStore, repositoryRoot, runGit } from './git.ts'
+import { JobCare, NO_CARE } from './job-care.ts'
+import type { LocalRoutes, TrialCare } from './job-care.ts'
 import { SelfImproveRun } from './loop.ts'
+import { MemoryGuard, vmStatSample } from './memory-guard.ts'
+import type { MemoryGuardSettings, VmStatSample } from './memory-guard.ts'
 import { createLlmTextModel } from './model.ts'
+import { ollamaOrigin, policyBaseUrl } from './ollama.ts'
 import { confinedCheckRunner, SANDBOX_EXEC, unconfinedCheckRunner } from './check-sandbox.ts'
 import { subprocessRunner } from './process.ts'
 import type { ProcessRunner } from './process.ts'
@@ -115,6 +120,21 @@ export interface CommandSettings {
   readonly home: string
   /** The patch layer applies add overlay entries to; empty is `<home>/cordis.patch.yml`, which every profile applies last. */
   readonly overlayPatch: string
+  /** How a job unloads a run's local model from its Ollama server. */
+  readonly ollama: OllamaSettings
+  /** The memory guard of every job, and the room a fresh trial waits for. */
+  readonly memoryGuard: MemoryGuardSettings
+}
+
+/** How a job unloads a run's local model. */
+export interface OllamaSettings {
+  /**
+   * Whether a job unloads the trials' model after each trial and the search roles' model after each role stage, when
+   * the run's policy patch routes the trials to a server that answers Ollama's `/api/ps`.
+   */
+  readonly unloadBetweenTrials: boolean
+  /** Bound on one unload: its requests and the wait for the model to leave the server's listing. */
+  readonly unloadTimeoutSeconds: number
 }
 
 /** A run composed from its spec. */
@@ -132,14 +152,16 @@ export interface OpenedRun {
   readonly git: (args: readonly string[], signal?: AbortSignal) => Promise<string>
 }
 
-/** Test seams for the schedule's clock and memory reader, and for the path of `sandbox-exec`. */
-export const internals: { now(): Date; memory(run: ProcessRunner): Promise<number>; sandboxExecutable: string } = {
+/** Test seams for the clock, the `vm_stat` sampler, and the path of `sandbox-exec`. */
+export const internals: { now(): Date; vmStat(run: ProcessRunner): Promise<VmStatSample>; sandboxExecutable: string } = {
   now: () => new Date(),
-  memory: async run => await vmStatMemory(run, VM_STAT_TIMEOUT_MS),
+  vmStat: async run => await vmStatSample(run, VM_STAT_TIMEOUT_MS),
   sandboxExecutable: SANDBOX_EXEC,
 }
 
 const VM_STAT_TIMEOUT_MS = 10_000
+/** Time between two listings of an Ollama server's loaded models while an unload waits. */
+const UNLOAD_POLL_MS = 250
 const RUN_ACTIONS = new Set(['baseline', 'calibrate', 'round', 'run', 'heldout'])
 const JOBS_MISSING = 'self-improve needs background jobs: load @deepseek-ai/dsh-jobs-local and @deepseek-ai/dsh-tool-jobs'
 
@@ -232,7 +254,7 @@ class SelfImprove {
       settings: settings.schedule,
       statePath: join(state, 'schedule.json'),
       now: () => internals.now(),
-      memory: async () => await internals.memory(this.runner),
+      memory: async () => (await internals.vmStat(this.runner)).room,
       activeJob: () => {
         const [job] = this.active
         return job === undefined ? undefined : `job ${job.id} (${job.label})`
@@ -299,15 +321,20 @@ class SelfImprove {
     }
     const jobs = this.jobs()
     const narration = new Narration()
-    const opened = await this.openSpec(invocation, spec, (line) => {
-      narration.write(line)
-    })
+    const path = await this.specPath(invocation, spec)
+    // Opening the run before the job reports a spec it cannot compose at once; the job opens it again with its care.
+    const opened = await this.open(path, () => {}, invocation.signal)
     const job = this.start(jobs, {
       label: `self-improve ${action} ${opened.spec.name}`,
       owner: invocation.agent.id,
       auto: false,
       narration,
-      work: async signal => await perform(opened.run, opened.spec, action, number, signal),
+      work: async (signal, care) => {
+        const { run, spec: runSpec } = await this.open(path, (line) => {
+          narration.write(line)
+        }, signal, care)
+        return await perform(run, runSpec, action, number, signal)
+      },
     })
     return { kind: 'success', text: `started job ${job}: self-improve ${action} ${opened.spec.name}` }
   }
@@ -369,8 +396,8 @@ class SelfImprove {
       owner,
       auto: true,
       narration,
-      work: async jobSignal => await runPipeline({
-        opened: await this.open(generation.spec, log, jobSignal),
+      work: async (jobSignal, care) => await runPipeline({
+        opened: await this.open(generation.spec, log, jobSignal, care),
         calibrationRepeats: auto.calibrationRepeats,
         apply: this.settings.autoApply ? { enabled: true, live: this.live, now: () => internals.now() } : { enabled: false },
         log,
@@ -473,22 +500,48 @@ class SelfImprove {
     return jobs
   }
 
-  private async openSpec(invocation: CommandInvocation, spec: string, log: (line: string) => void = () => {}): Promise<OpenedRun> {
-    const cwd = await this.ctx.workingDirectory.ensure(invocation.agent, invocation.signal)
-    return await this.open(resolve(cwd, spec), log, invocation.signal)
+  private async openSpec(invocation: CommandInvocation, spec: string): Promise<OpenedRun> {
+    return await this.open(await this.specPath(invocation, spec), () => {}, invocation.signal)
   }
 
-  private async open(spec: string, log: (line: string) => void, signal?: AbortSignal): Promise<OpenedRun> {
-    return await openRun(this.ctx, this.settings, spec, log, signal)
+  private async specPath(invocation: CommandInvocation, spec: string): Promise<string> {
+    return resolve(await this.ctx.workingDirectory.ensure(invocation.agent, invocation.signal), spec)
   }
 
-  /** Start one job whose work runs until it settles, is killed, or the plugin is disposed. */
+  private async open(
+    spec: string,
+    log: (line: string) => void,
+    signal?: AbortSignal,
+    care?: (routes: LocalRoutes) => TrialCare,
+  ): Promise<OpenedRun> {
+    return await openRun(this.ctx, this.settings, spec, log, signal, care)
+  }
+
+  /** The care of one job: unloads after trials and role stages, and the room wait before fresh trials. */
+  private care(log: (line: string) => void, stop: (reason: string) => void): (routes: LocalRoutes) => TrialCare {
+    const { ollama, memoryGuard, schedule } = this.settings
+    return routes => new JobCare({
+      routes,
+      unload: ollama.unloadBetweenTrials ? { timeoutMs: ollama.unloadTimeoutSeconds * 1000, pollMs: UNLOAD_POLL_MS } : undefined,
+      room: memoryGuard.enabled
+        ? { minGiB: schedule.minFreeMemoryGiB, waitMs: memoryGuard.roomWaitMinutes * 60_000, pollMs: memoryGuard.intervalSeconds * 1000 }
+        : undefined,
+      sample: async () => await internals.vmStat(this.runner),
+      stop,
+      log,
+    })
+  }
+
+  /**
+   * Start one job whose work runs until it settles, is killed, is stopped by the memory guard, or the plugin is
+   * disposed. A killed or stopped job settles `killed` with the reason as its detail.
+   */
   private start(jobs: JobRegistry, job: {
     readonly label: string
     readonly owner: SessionId
     readonly auto: boolean
     readonly narration: Narration
-    readonly work: (signal: AbortSignal) => Promise<string>
+    readonly work: (signal: AbortSignal, care: (routes: LocalRoutes) => TrialCare) => Promise<string>
   }): string {
     return jobs.start({
       kind: 'self-improve',
@@ -497,11 +550,26 @@ class SelfImprove {
       run: (handle) => {
         job.narration.attach(handle)
         const controller = new AbortController()
+        const log = (line: string): void => {
+          job.narration.write(line)
+        }
+        const stop = (reason: string): void => {
+          log(reason)
+          controller.abort(new Error(reason))
+        }
+        const guard = this.settings.memoryGuard.enabled
+          ? new MemoryGuard({ settings: this.settings.memoryGuard, sample: async () => await internals.vmStat(this.runner), stop, log })
+          : undefined
         const done = (async (): Promise<JobOutcome> => {
           try {
-            return { status: 'completed', result: await job.work(controller.signal) }
+            await guard?.start()
+            return { status: 'completed', result: await job.work(controller.signal, this.care(log, stop)) }
           } catch (error) {
-            return { status: controller.signal.aborted ? 'killed' : 'failed', detail: messageOf(error) }
+            return controller.signal.aborted
+              ? { status: 'killed', detail: messageOf(controller.signal.reason) }
+              : { status: 'failed', detail: messageOf(error) }
+          } finally {
+            guard?.dispose()
           }
         })()
         const entry: ActiveJob = { id: handle.id, label: job.label, auto: job.auto, startedAt: internals.now(), controller, done }
@@ -543,8 +611,12 @@ class Narration {
  * @param specPath - absolute path of the run spec.
  * @param log - receives one line per stage of the run.
  * @param signal - cancellation of the composition's git commands.
+ * @param care - builds the calls around trials and role stages from the run's local models: the trials' model when
+ * the policy patches give the trials' provider a `baseURL`, and the search roles' model on the same server when the
+ * roles use the same provider; omitted calls do nothing.
  * @returns the run, its spec, its directory, its revision store, and its repository's git.
- * @throws Error for an invalid spec or suite, an unset forwarded variable, or an evolved directory inside the runs directory.
+ * @throws Error for an invalid spec, suite, or policy patch, an unset forwarded variable, or an evolved directory
+ * inside the runs directory.
  */
 export async function openRun(
   ctx: Context,
@@ -552,6 +624,7 @@ export async function openRun(
   specPath: string,
   log: (line: string) => void,
   signal?: AbortSignal,
+  care: (routes: LocalRoutes) => TrialCare = () => NO_CARE,
 ): Promise<OpenedRun> {
   const spec = await loadRunSpec(specPath)
   const suite = await loadSuite(spec.suite)
@@ -568,6 +641,12 @@ export async function openRun(
     if (value === undefined) throw new Error(`self-improve run spec forwards ${variable}, which is not set`)
     environment[variable] = value
   }
+  const trialBase = await policyBaseUrl(spec.trial.policyPatches, spec.trial.provider)
+  const origin = trialBase === undefined ? undefined : ollamaOrigin(trialBase)
+  const trialCare = care(origin === undefined ? {} : {
+    trial: { origin, model: spec.trial.model },
+    ...spec.roles.provider === spec.trial.provider ? { role: { origin, model: spec.roles.model } } : {},
+  })
   await mkdir(runsDirectory, { recursive: true, mode: 0o700 })
   const ignore = join(runsDirectory, '.gitignore')
   if (!await exists(ignore)) await writeFile(ignore, '*\n', { mode: 0o600 })
@@ -600,8 +679,32 @@ export async function openRun(
         executable: internals.sandboxExecutable,
       }, area)
       : () => unconfinedCheckRunner(runner),
+    care: trialCare,
     maxTraceCharacters: spec.trial.maxTraceCharacters,
     maxPromptGrowth: spec.trial.maxPromptGrowth,
+  })
+  // Each role stage ends with the care's call, so a local server unloads the roles' model between stages.
+  const stage = async <T>(name: string, work: () => Promise<T>): Promise<T> => {
+    try {
+      return await work()
+    } finally {
+      await trialCare.afterRole(name)
+    }
+  }
+  const analyst = createAnalyst(model)
+  const proposer = createProposer({
+    model,
+    maxTurns: spec.roles.proposerTurns,
+    maxReadCharacters: spec.roles.maxReadCharacters,
+    maxHistoryDiffCharacters: spec.roles.maxHistoryDiffCharacters,
+    writableExtensions: EVOLVED_FILE_EXTENSIONS,
+  })
+  const critic = createCritic({
+    model,
+    brief: suite.briefs.critic,
+    patterns: [...DSH_CRITIC_PATTERNS, ...suite.criticPatterns, ...taskNamePatterns([...suite.tasks.keys()])],
+    attempts: spec.roles.criticAttempts,
+    maxDiffCharacters: spec.roles.maxDiffCharacters,
   })
   const directory = new RunDirectory(runRoot)
   const store = new GitRevisionStore({
@@ -616,21 +719,9 @@ export async function openRun(
   const run = new SelfImproveRun({
     domain,
     store,
-    analyst: createAnalyst(model),
-    proposer: createProposer({
-      model,
-      maxTurns: spec.roles.proposerTurns,
-      maxReadCharacters: spec.roles.maxReadCharacters,
-      maxHistoryDiffCharacters: spec.roles.maxHistoryDiffCharacters,
-      writableExtensions: EVOLVED_FILE_EXTENSIONS,
-    }),
-    critic: createCritic({
-      model,
-      brief: suite.briefs.critic,
-      patterns: [...DSH_CRITIC_PATTERNS, ...suite.criticPatterns, ...taskNamePatterns([...suite.tasks.keys()])],
-      attempts: spec.roles.criticAttempts,
-      maxDiffCharacters: spec.roles.maxDiffCharacters,
-    }),
+    analyst: { analyze: async request => await stage(`the analysis of round ${request.round + 1}`, async () => await analyst.analyze(request)) },
+    proposer: { propose: async request => await stage(`the draft of candidate ${request.variant} in round ${request.round + 1}`, async () => await proposer.propose(request)) },
+    critic: { review: async request => await stage('a review', async () => await critic.review(request)) },
     directory,
     log,
   }, spec.settings)

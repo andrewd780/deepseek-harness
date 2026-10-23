@@ -29,6 +29,9 @@
 /deepseek-ai-dsh-experimental-self-improve/use-this-package/schedule-the-automatic-mode:
   en: d149bc651f33fa26
   zh: 04bf04d84c595e20
+/deepseek-ai-dsh-experimental-self-improve/use-this-package/keep-a-job-s-memory-in-bounds:
+  en: 0da0c16085fea1c7
+  zh: b006e74f04cd158f
 /deepseek-ai-dsh-experimental-self-improve/use-this-package/prepare-a-run:
   en: f0532e79f4bfb294
   zh: 3b7af851308f202d
@@ -39,8 +42,8 @@
   en: 55dfd2b2c6a31487
   zh: e1f42dd580c1dbae
 /deepseek-ai-dsh-experimental-self-improve/understand-the-implementation:
-  en: d7a54d896053cb9d
-  zh: f21a02bbb7c42d58
+  en: 647590d88194353f
+  zh: 105b74a546bb5642
 /deepseek-ai-dsh-experimental-self-improve/further-exploration:
   en: 3a2e858371d06dd7
   zh: 9ca5e1dfcc026d85
@@ -120,8 +123,8 @@
   en: 38a1cf16f32758b9
   zh: da17a8f458db76dd
 /deepseek-ai-dsh-experimental-self-improve/known-limitations-and-deferred-work:
-  en: 0591f9a5e3ca728b
-  zh: 2b20e4fca30c74a8
+  en: 282e32a81370ebbf
+  zh: 7e865aebe13f26d5
 /deepseek-ai-dsh-experimental-self-improve/known-limitations-and-deferred-work/dev-note:
   en: 87e124a19282e348
   zh: b626d2a0d886064d

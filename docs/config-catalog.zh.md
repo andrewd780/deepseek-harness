@@ -1176,7 +1176,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-experimental-self-improve`
 
 - `inject`: `commands` · `llm` · `subprocess` · `workingDirectory`
-- `source`: [`packages/experimental/self-improve/src/command.ts:92`](../packages/experimental/self-improve/src/command.ts)
+- `source`: [`packages/experimental/self-improve/src/command.ts:97`](../packages/experimental/self-improve/src/command.ts)
 
 ```ts config-catalog
 /** The plugin configuration with every default filled. */
@@ -1206,6 +1206,10 @@ export interface CommandSettings {
   readonly home: string
   /** The patch layer applies add overlay entries to; empty is `<home>/cordis.patch.yml`, which every profile applies last. */
   readonly overlayPatch: string
+  /** How a job unloads a run's local model from its Ollama server. */
+  readonly ollama: OllamaSettings
+  /** The memory guard of every job, and the room a fresh trial waits for. */
+  readonly memoryGuard: MemoryGuardSettings
 }
 
 /** The automatic run's location, route, and calibration. */
@@ -1240,6 +1244,31 @@ export interface ScheduleSettings {
   readonly windowHours: number
   /** Minutes between two checks. */
   readonly checkIntervalMinutes: number
+}
+
+/** How a job unloads a run's local model. */
+export interface OllamaSettings {
+  /**
+   * Whether a job unloads the trials' model after each trial and the search roles' model after each role stage, when
+   * the run's policy patch routes the trials to a server that answers Ollama's `/api/ps`.
+   */
+  readonly unloadBetweenTrials: boolean
+  /** Bound on one unload: its requests and the wait for the model to leave the server's listing. */
+  readonly unloadTimeoutSeconds: number
+}
+
+/** The guard's limits. */
+export interface MemoryGuardSettings {
+  /** Whether jobs run under the guard and fresh trials wait for room. */
+  readonly enabled: boolean
+  /** Most swap-outs since the job started, in MiB. */
+  readonly maxSwapOutMiB: number
+  /** Least room, in GiB, before three low samples in a row stop the job. */
+  readonly minFreeGiB: number
+  /** Time between two samples. */
+  readonly intervalSeconds: number
+  /** Longest wait for room before a fresh trial, after unloading the run's local models. */
+  readonly roomWaitMinutes: number
 }
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-experimental-self-improve -->

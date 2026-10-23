@@ -34,6 +34,7 @@ import { GradingRefused } from './check-sandbox.ts'
 import type { CheckArea } from './check-sandbox.ts'
 import type { ComponentSet } from './components.ts'
 import { aggregate, taskMean } from './evaluate.ts'
+import type { TrialCare } from './job-care.ts'
 import type { EvaluationResult, TaskResult } from './evaluate.ts'
 import { checkOverlay, describeOverlayRules, OVERLAY_FILE } from './overlay.ts'
 import type { OverlayCheck, OverlayRules } from './overlay.ts'
@@ -75,6 +76,8 @@ export interface SuiteDomainSettings {
    * @returns the runner; a {@link GradingRefused} it throws marks the trial errored and stops the measurement.
    */
   readonly checkRunner: (area: CheckArea) => CommandRunner
+  /** Called before each fresh trial and after each trial that ran. */
+  readonly care: TrialCare
   /** Longest rendering of one message or tool payload in a trace. */
   readonly maxTraceCharacters: number
   /** Largest relative growth of the first request's prompt a candidate may carry; `undefined` sets no guard. */
@@ -212,6 +215,8 @@ export class SuiteDomain implements SelfImproveDomain {
     const task = this.settings.suite.tasks.get(taskId)
     if (task === undefined) throw new Error(`self-improve suite has no task ${taskId}`)
     const directory = this.trialDirectory(request.job, taskId, trial)
+    const label = `${request.job} ${taskId}#${trial}`
+    await this.settings.care.beforeTrial(label, request.signal)
     await mkdir(this.settings.scratch, { recursive: true })
     const scratch = await mkdtemp(join(this.settings.scratch, 'trial-'))
     try {
@@ -239,7 +244,12 @@ export class SuiteDomain implements SelfImproveDomain {
         timeoutMs: this.settings.trialTimeoutMs,
         shutdownTimeoutMs: this.settings.shutdownTimeoutMs,
       }
-      const record = await runTrial(launch, task.prompt, request.signal)
+      let record: TrialRecord
+      try {
+        record = await runTrial(launch, task.prompt, request.signal)
+      } finally {
+        await this.settings.care.afterTrial(label)
+      }
       await writeJson(join(directory, 'record.json'), record)
       if (record.failure !== undefined) return { failure: record.failure }
       const runner = this.settings.checkRunner({ workspace: await realpath(workspace), temp: await realpath(temp) })

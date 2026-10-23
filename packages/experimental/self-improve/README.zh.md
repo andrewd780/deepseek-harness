@@ -92,7 +92,26 @@ kind: "package-reference"
       minFreeMemoryGiB: 22
       windowHours: 0
       checkIntervalMinutes: 5
+    ollama:
+      unloadBetweenTrials: true
+      unloadTimeoutSeconds: 30
+    memoryGuard:
+      enabled: true
+      maxSwapOutMiB: 256
+      minFreeGiB: 2
+      intervalSeconds: 5
+      roomWaitMinutes: 10
 ```
+
+### 把任务的内存控制在范围内
+
+在本地模型上运行时，模型、它的提示缓存和试验运行时会同时占用内存。三项设置防止任务把 macOS 推入换页；每一项都作用于所有 self-improve 任务，无论是否由定时计划启动。
+
+- **试验之间卸载**（`ollama.unloadBetweenTrials`）：当运行的策略补丁为试验的提供方给出一个指向 Ollama 服务器的 `baseURL` 时，任务会在每次试验之后请求该服务器卸载试验模型；当搜索角色使用同一提供方时，还会在每个角色阶段之后卸载搜索角色的模型。一次卸载就是向 `POST <origin>/api/generate` 发送 `{"model": <id>, "keep_alive": 0}`，其中 `<origin>` 是去掉 `/v1` 的 `baseURL`；随后任务最多等待 `ollama.unloadTimeoutSeconds` 秒，直到 `/api/ps` 不再列出该模型。服务器未列出的模型不会被处理，因此卸载绝不会加载模型，提示缓存也最多只保留一次试验的内容。任务输出会记录每次卸载及其耗时。卸载失败会被记录，运行继续；不以模型列表响应 `/api/ps` 的服务器不是 Ollama，任务不再向它发送卸载请求。
+- **内存守卫**（`memoryGuard`）：在 macOS 上，任务每 `memoryGuard.intervalSeconds` 秒采样一次 `vm_stat`。当自任务启动以来换出超过 `memoryGuard.maxSwapOutMiB` MiB，或空闲、非活跃和推测页内存连续 3 次采样都低于 `memoryGuard.minFreeGiB` GiB 时，守卫会停止任务。任务以 `killed` 结束，其详情以 `stopped by the memory guard:` 开头并写明触发的限制，任务输出记录同一行，并且不会应用任何内容：流水线在应用阶段之前会检查是否已被停止。运行保留它已保存的每次试验和每个阶段，因此下一次 `/self-improve` 会恢复它，并重新度量被停止的那次试验。无法读取 `vm_stat` 时，任务在没有守卫的情况下运行，其输出会说明这一点。
+- **新试验之前的余量**：开启守卫时，尚未保存结果的试验会等待空闲、非活跃和推测页内存达到 `schedule.minFreeMemoryGiB` GiB。余量不足时，若卸载已开启，任务会卸载运行的本地模型，记录这次等待，并每 `memoryGuard.intervalSeconds` 秒重新检查一次，最多等待 `memoryGuard.roomWaitMinutes` 分钟；超时后它以与守卫相同的方式停止，并写明它看到的余量。`schedule.minFreeMemoryGiB` 为 0 时跳过这次等待。
+
+定时计划自身决定是否启动定时任务的内存检查保持不变。
 
 ### 准备一次运行
 
@@ -157,6 +176,7 @@ kind: "package-reference"
 | [`src/auto.ts`](src/auto.ts)、[`src/bootstrap.ts`](src/bootstrap.ts)、[`src/template.ts`](src/template.ts) | 自动流水线、其各代与总结，以及它创建的入门运行 |
 | [`src/apply.ts`](src/apply.ts) | 针对实时配置的应用、备份与撤销 |
 | [`src/auto-schedule.ts`](src/auto-schedule.ts) | 每日定时计划、其检查与状态文件 |
+| [`src/job-care.ts`](src/job-care.ts)、[`src/ollama.ts`](src/ollama.ts)、[`src/memory-guard.ts`](src/memory-guard.ts) | 试验与角色阶段之后的卸载、新试验之前的余量等待，以及停止任务的内存守卫 |
 | [`src/loop.ts`](src/loop.ts) | baseline、校准、轮次与 held-out 度量 |
 | [`src/schedule.ts`](src/schedule.ts)、[`src/history.ts`](src/history.ts)、[`src/selection.ts`](src/selection.ts)、[`src/calibrate.ts`](src/calibrate.ts) | 编辑预算、历史与指令、可接受性、噪声带 |
 | [`src/critic.ts`](src/critic.ts)、[`src/roles.ts`](src/roles.ts)、[`src/model.ts`](src/model.ts) | 审查者、analyst、proposer 及其模型请求 |
@@ -341,6 +361,7 @@ Reply with one JSON object and nothing else: {"verdict": "accept" or "reject", "
 - **候选按顺序处理** — 一轮依次起草并度量其候选；`trial.concurrency` 只并行同一次度量中的试验。
 - **推迟的参考实现部分** — 逐任务摘要、预测记分板和对已保存轮次的重新裁决尚未实现。
 - **仅限命令** — 运行只能在带有后台任务的 composition 中，从 `/self-improve` 或它开启的定时计划启动；没有模型工具。
+- **内存照管只认识 Ollama 和 macOS** — 卸载只发往能响应 Ollama `/api/ps` 的服务器，对象是试验模型，以及在搜索角色使用试验提供方时同一服务器上的搜索角色模型；不会读取你 dsh 配置中搜索角色的路由。守卫和余量等待读取 `vm_stat`，因此在其他系统上任务在没有守卫的情况下运行。
 - **定时运行需要其所有者** — 定时任务属于其所有者会话，因此当该会话在 dsh 进程中没有活跃的 agent 时，定时计划会一直等待，而释放该 agent 会取消正在运行的任务。
 - **没有录制会话快照** — 该命令的会话记录，即 `command/run` 与 `command/done` 这一对事件，没有录制会话快照；Web 快照通道可以录制它。`tests/loader-composition.spec.ts` 通过真实 composition 覆盖该命令（包括入门运行上的自动流水线），`tests/real-runtime.e2e.ts` 让每次试验都在全新的 `dsh` 运行时中针对本地替身模型端点进行度量。
 

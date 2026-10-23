@@ -3,14 +3,14 @@
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/experimental/self-improve/README.md
 /:
-  en: 1d6c02b5f607a46e
-  zh: aec66cfaac5dcf1a
+  en: bce6f64a170351f7
+  zh: 18181e934068825c
 /deepseek-ai-dsh-experimental-self-improve:
   en: eb94f141761bef21
   zh: 66004e2e669ab5c5
 /deepseek-ai-dsh-experimental-self-improve/summary:
-  en: 9216678a96ec5bdb
-  zh: d2f6d4f30ca316ea
+  en: ea6b838467021a47
+  zh: 242a82fefcdd07ad
 /deepseek-ai-dsh-experimental-self-improve/table-of-contents:
   en: d152484eb41ac6b4
   zh: 2f8a621b991260a1
@@ -18,20 +18,29 @@
   en: bbff250eba0f1b89
   zh: 0a618f05cc88ee2b
 /deepseek-ai-dsh-experimental-self-improve/use-this-package/mount-the-command:
-  en: a37a63a9f8ad8905
-  zh: 7b05f54f21318fae
+  en: 9c211ef6b167bc71
+  zh: 368a0095bfa2d4c6
+/deepseek-ai-dsh-experimental-self-improve/use-this-package/run-it-automatically:
+  en: 18ca503155904247
+  zh: 5e68f0b62e4787cf
+/deepseek-ai-dsh-experimental-self-improve/use-this-package/apply-a-result-and-undo-it:
+  en: 7cafc378edfb30e1
+  zh: 210a68a8a4d5cf54
+/deepseek-ai-dsh-experimental-self-improve/use-this-package/schedule-the-automatic-mode:
+  en: d149bc651f33fa26
+  zh: 04bf04d84c595e20
 /deepseek-ai-dsh-experimental-self-improve/use-this-package/prepare-a-run:
   en: 7a7d8a0b6f04988d
   zh: ec624a26c8d8bf90
 /deepseek-ai-dsh-experimental-self-improve/use-this-package/run-it:
-  en: 9c752d1c03956fe8
-  zh: 4bad3065070c451d
+  en: 3ab9bbc4686e3705
+  zh: a5b786bd4271d381
 /deepseek-ai-dsh-experimental-self-improve/use-this-package/what-a-round-does:
   en: 55dfd2b2c6a31487
   zh: e1f42dd580c1dbae
 /deepseek-ai-dsh-experimental-self-improve/understand-the-implementation:
-  en: a32113a73243052c
-  zh: b0c7f9c03affe8fb
+  en: da74264a3ebd6444
+  zh: 615cc33df860b464
 /deepseek-ai-dsh-experimental-self-improve/further-exploration:
   en: 3a2e858371d06dd7
   zh: 9ca5e1dfcc026d85
@@ -98,9 +107,21 @@
 /deepseek-ai-dsh-experimental-self-improve/model-experience/trial-runtimes/kv-cache-effect:
   en: 5f16dc756be2649d
   zh: 1209ffc0d1079fa6
+/deepseek-ai-dsh-experimental-self-improve/model-experience/applied-configuration:
+  en: acfb344266550217
+  zh: 6cde45ab033fb4ae
+/deepseek-ai-dsh-experimental-self-improve/model-experience/applied-configuration/what-the-model-sees:
+  en: d1db29d76ab10389
+  zh: aa9525759baea0e6
+/deepseek-ai-dsh-experimental-self-improve/model-experience/applied-configuration/token-effect:
+  en: cc99729677dc32d3
+  zh: 544b6e46d179765b
+/deepseek-ai-dsh-experimental-self-improve/model-experience/applied-configuration/kv-cache-effect:
+  en: 38a1cf16f32758b9
+  zh: da17a8f458db76dd
 /deepseek-ai-dsh-experimental-self-improve/known-limitations-and-deferred-work:
-  en: 4647249eb3b7fe33
-  zh: 5ab5a267f8f78a26
+  en: 8669f5d76f19cb21
+  zh: d95fb3693ee5d8dd
 /deepseek-ai-dsh-experimental-self-improve/known-limitations-and-deferred-work/dev-note:
   en: 87e124a19282e348
   zh: b626d2a0d886064d

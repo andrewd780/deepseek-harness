@@ -1174,21 +1174,65 @@ export interface Config {
 ## `@deepseek-ai/dsh-experimental-self-improve`
 
 - `inject`: `commands` · `llm` · `subprocess` · `workingDirectory`
-- `source`: [`packages/experimental/self-improve/src/index.ts:46`](../packages/experimental/self-improve/src/index.ts)
+- `source`: [`packages/experimental/self-improve/src/command.ts:91`](../packages/experimental/self-improve/src/command.ts)
 
 ```ts config-catalog
-/** Where runs keep their files, and the limits of the processes they start. */
-export interface Config {
+/** The plugin configuration with every default filled. */
+export interface CommandSettings {
   /** Run directories, relative to the repository root; a `.gitignore` excluding everything is written when absent. */
-  runsDirectory?: string
+  readonly runsDirectory: string
   /** Absolute parent of each trial's disposable workspace and homes; empty uses the operating system's temporary directory. */
-  scratchDirectory?: string
+  readonly scratchDirectory: string
   /** Deadline of one git command. */
-  gitTimeoutMs?: number
+  readonly gitTimeoutMs: number
   /** Time between a process's termination request and its forced kill. */
-  processGraceMs?: number
+  readonly processGraceMs: number
   /** Bytes kept of each process output stream. */
-  maxOutputBytes?: number
+  readonly maxOutputBytes: number
+  /** Whether the automatic pipeline writes an accepted result into the live configuration, after a backup. */
+  readonly autoApply: boolean
+  /** The automatic run's location, the route a new run is created with, and its calibration. */
+  readonly auto: AutoSettings
+  /** The automatic pipeline's daily schedule. */
+  readonly schedule: ScheduleSettings
+  /** The Harness home that applies write `AGENTS.md` and `skills/` into, holding the plugin's state; empty is the running profile's. */
+  readonly home: string
+  /** The patch layer applies add overlay entries to; empty is `<home>/cordis.patch.yml`, which every profile applies last. */
+  readonly overlayPatch: string
+}
+
+/** The automatic run's location, route, and calibration. */
+export interface AutoSettings {
+  /** The automatic run's repository; empty is `<home>/self-improve/auto`. */
+  readonly directory: string
+  /** Provider key of the trials' and the search roles' route, written into a new run. */
+  readonly provider: string
+  /** Model of the trials and the search roles, written into a new run. */
+  readonly model: string
+  /** OpenAI-compatible base URL a new run's trials route to. */
+  readonly baseUrl: string
+  /** Context window a new run's trial route declares. */
+  readonly contextWindow: number
+  /** Rounds of each generation, written into a new run. */
+  readonly rounds: number
+  /** Extra baseline measurements the noise band's calibration takes. */
+  readonly calibrationRepeats: number
+}
+
+/** The plugin settings of the schedule. */
+export interface ScheduleSettings {
+  /** Whether scheduled runs start, unless `/self-improve schedule on` or `off` set it. */
+  readonly enabled: boolean
+  /** Local start time, `HH:MM` in 24-hour time, unless `/self-improve schedule on HH:MM` set one. */
+  readonly time: string
+  /** Least hours between two starts. */
+  readonly minIntervalHours: number
+  /** Least free, inactive, and speculative memory `vm_stat` reports, in GiB (2^30 bytes); 0 skips the check. */
+  readonly minFreeMemoryGiB: number
+  /** Hours after the start time in which a missed run may still start; 0 allows it until the next start time. */
+  readonly windowHours: number
+  /** Minutes between two checks. */
+  readonly checkIntervalMinutes: number
 }
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-experimental-self-improve -->

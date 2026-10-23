@@ -1,5 +1,5 @@
 ---
-description: "Improve a harness configuration by measured search: regularized recursive self-improvement over a task suite, with accepted candidates committed to an evolve branch."
+description: "Improve a harness configuration by measured search: regularized recursive self-improvement over a task suite, with accepted candidates committed to an evolve branch, and an automatic mode that runs, applies, and schedules it."
 kind: "package-reference"
 ---
 
@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Run regularized recursive self-improvement (RRSI) on a directory of harness configuration: a profile overlay, user-global instructions, and skills. Each round, a model analyzes the incumbent's trajectories on a task suite you supply and drafts candidate edits, a reviewer rejects edits that fit the suite instead of improving the harness, and fresh dsh runtimes measure every remaining candidate. A candidate replaces the incumbent only when its score clears the noise floor and measured gain pays for any added tokens. Accepted candidates are commits on an evolve branch in your repository; you decide whether to apply one.
+Run regularized recursive self-improvement (RRSI) on a directory of harness configuration: a profile overlay, user-global instructions, and skills. Each round, a model drafts edits from the incumbent's trajectories on a task suite, a reviewer rejects edits that fit the suite, and fresh dsh runtimes measure the rest. A candidate replaces the incumbent only when its score clears the noise floor and its gain pays for added tokens. `/self-improve` alone creates a starter run, runs every stage as one resumable background job, applies an accepted result to your configuration with a backup, and can repeat daily.
 
 ## Table of Contents
 
@@ -35,7 +35,63 @@ Mount the plugin in a composition that already provides `llm`, `subprocess`, `wo
 - name: '@deepseek-ai/dsh-experimental-self-improve'
 ```
 
-The runs directory, the trial scratch directory, and process limits are in the [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-experimental-self-improve).
+The runs directory, the trial scratch directory, process limits, and the automatic mode's settings are in the [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-experimental-self-improve).
+
+### Run it automatically
+
+`/self-improve` with no arguments, or `/self-improve auto`, does the whole job as one background job owned by the invoking session:
+
+1. **Create the run.** On first use it creates the automatic run, a git repository at `<home>/self-improve/auto` (`auto.directory`), from a starter run bundled in the package, and commits it; an existing directory is never overwritten. The starter run holds `run.json`, `suite.json` with six practice (`evolve`) and two held-out Node.js coding tasks (fix a bug, add a test, refactor without changing behavior, follow a project's written rules), the seed `evolved/AGENTS.md`, and `policy.patch.yml`, which routes every trial to `auto.model` of `auto.provider` at `auto.baseUrl` with an `auto.contextWindow` window and keeps the sandbox at `workspace-write`. Each check is an inline `node` script, so a trial cannot edit its grader. The search roles call the same provider and model through your dsh configuration, which must list the model. The route, `auto.rounds`, and small-window limits (an edit history of 8, history diffs of 4,000 characters, 4,096 output tokens, trace payloads of 400 characters) are written into a new run; edit `run.json` to change an existing one.
+2. **Run every stage the run has not finished.** The baseline; the noise band, by the spec's `calibration.method` with `auto.calibrationRepeats` more baseline measurements; every remaining round; the held-out tasks at both ends of the trajectory; the apply; and a summary. Each stage reads the run's stored state first, so a job stopped by a crash or a restart resumes where it stopped. The job's output narrates each stage, and its result is the summary: the scores before and after, each accepted candidate's own summary, the files of the evolved directory that changed, and whether and where the result was applied.
+3. **Continue with a new generation.** Once a generation finished, the next `/self-improve` writes `run-<n>.json`, a copy of `run.json` named `<name>-<n>` whose evolve branch starts from the previous generation's result, and runs it the same way.
+
+`/self-improve` while the automatic job runs says so and where to look; `/self-improve status` shows the generation, its stages and trajectory, the last summary, and the schedule; `/self-improve help` lists every form. Before starting a job, the command checks that the model runtime lists the run's search-role model, so an unlisted model fails at once instead of after the baseline.
+
+### Apply a result and undo it
+
+When a generation ends on an accepted candidate rather than its baseline and `autoApply` is on, the pipeline writes that candidate's evolved directory where dsh reads it. `/self-improve apply` does the same by hand for the newest generation with an accepted candidate, and `/self-improve apply <spec.json>` for the newest accepted candidate of any run.
+
+| Part | Written to | How |
+|---|---|---|
+| `overlay.patch.yml` | `<home>/cordis.patch.yml`, or `overlayPatch` | The checked entries, between `# >>> dsh self-improve` and `# <<< dsh self-improve` lines |
+| `AGENTS.md` | `<home>/AGENTS.md` | Between `<!-- >>> dsh self-improve` and `<!-- <<< dsh self-improve -->` lines, after your own text |
+| `skills/<name>` | `<home>/skills/<name>` | Whole entries; entries an earlier apply wrote that the result lacks are removed |
+
+`<home>` is the running profile's Harness home, `~/.dsh` by default, or `home`. The home patch layer applies after every profile's own `cordis.patch.yml`, the file dsh's plugin manager and settings pages write, so applied entries win and those editors never write into the managed section; the settings pages refuse to change an entry the home layer overrides. The apply checks the overlay against the overlay rules again and copies only regular files with the evolved directory's extensions. Before anything changes, it refuses when a managed section differs from what the newest apply wrote, or when a skill of the same name exists that no apply wrote. It copies each path it changes to `<home>/self-improve/backups/<time>/` with a `manifest.json` first.
+
+New sessions use the applied configuration. dsh reloads its patch layers and watches skills while it runs, so an open session can pick up part of a change; start a new session to get all of it. `/self-improve undo` reverses the newest apply not yet undone: it restores the sections and skill directories that apply replaced, keeps what you wrote outside the sections since, and saves what it replaces to a `<time>-undo` backup first. The pipeline never applies an undone result again, and the next generation starts from the undone generation's baseline; `/self-improve apply` still applies it by hand. When an apply fails, the generation stays unfinished, and the next `/self-improve` retries the apply before anything else.
+
+### Schedule the automatic mode
+
+With the schedule on, a timer checks every `schedule.checkIntervalMinutes` minutes while dsh runs and starts the same pipeline when every check passes:
+
+- **Time:** no run started since the most recent `schedule.time`, a local `HH:MM`, and at least `schedule.minIntervalHours` hours passed since the last start. A run missed at its time starts later, until the next start time or, with `schedule.windowHours` above 0, until that many hours after it.
+- **No other job:** no self-improve job runs in this dsh process.
+- **Memory room:** `vm_stat` reports at least `schedule.minFreeMemoryGiB` GiB of free, inactive, and speculative memory, the room macOS can give a model load without swapping.
+- **Owner:** a background job belongs to a session, so scheduled jobs belong to the session that ran `/self-improve schedule on`; when the plugin settings turned the schedule on, the first session that runs any `/self-improve` command claims it. That session must be open when a run is due.
+
+A due check that cannot start records why in `<home>/self-improve/schedule.json` and tries again on the next tick. `/self-improve schedule on [HH:MM]`, `/self-improve schedule off`, and `/self-improve schedule status` change and show the schedule; the command's choice overrides `schedule.enabled` and `schedule.time`. The automatic mode's settings at their defaults:
+
+```yaml
+- id: self-improve
+  name: '@deepseek-ai/dsh-experimental-self-improve'
+  config:
+    autoApply: true
+    auto:
+      provider: ollama
+      model: qwen38-27b-abliterated-mlx-q4:latest
+      baseUrl: http://localhost:11434/v1
+      contextWindow: 32768
+      rounds: 3
+      calibrationRepeats: 1
+    schedule:
+      enabled: false
+      time: '03:00'
+      minIntervalHours: 20
+      minFreeMemoryGiB: 22
+      windowHours: 0
+      checkIntervalMinutes: 5
+```
 
 ### Prepare a run
 
@@ -67,11 +123,12 @@ A run uses four kinds of files in a git repository:
 /self-improve run run.json
 /self-improve heldout run.json [trajectory index]
 /self-improve status run.json
+/self-improve apply run.json
 ```
 
-Every action except `status` starts a background job owned by the invoking agent; its output narrates each stage and its result reports the outcome. `baseline` measures the evolve branch's starting commit. `calibrate` measures that baseline again and stores the noise band a spec with `"delta": "calibrate"` uses, by the spec's `calibration.method`; each repeat costs one baseline measurement. `spread` needs at least one repeat; `z` with none bootstraps over the baseline's trials, a weaker estimate. `round` runs the next rounds, `run` runs every remaining round, and `heldout` measures the latest incumbent, or the given trajectory entry, on the held-out tasks.
+`baseline`, `calibrate`, `round`, `run`, and `heldout` start a background job owned by the invoking agent; its output narrates each stage and its result reports the outcome. `baseline` measures the evolve branch's starting commit. `calibrate` measures that baseline again and stores the noise band a spec with `"delta": "calibrate"` uses, by the spec's `calibration.method`; each repeat costs one baseline measurement. `spread` needs at least one repeat; `z` with none bootstraps over the baseline's trials, a weaker estimate. `round` runs the next rounds, `run` runs every remaining round, and `heldout` measures the latest incumbent, or the given trajectory entry, on the held-out tasks.
 
-Accepted candidates move the evolve branch, `self-improve/<name>` unless the spec names another. Compare a winner with `git diff <start> self-improve/<name> -- <evolved directory>`, and apply it yourself, for example by passing its overlay with `--patch`. The evolve branch must not be checked out anywhere.
+Accepted candidates move the evolve branch, `self-improve/<name>` unless the spec names another. Compare a winner with `git diff <start> self-improve/<name> -- <evolved directory>`, and apply it with `/self-improve apply run.json`, which works as the automatic apply does. The evolve branch must not be checked out anywhere.
 
 ### What a round does
 
@@ -91,11 +148,14 @@ The edit history, the prune set of components whose recent edits gained nothing,
 <details>
 <summary>Implementation internals — click to expand</summary>
 
-`/self-improve` composes a run from its spec and starts it as a background job. The run holds a lock on its directory, so two jobs never advance one run. Each stage stores its result before the next starts: an interrupted round resumes from its stored drafts and evaluations, and the history and trajectory are written together as the round's commit point before the evolve branch moves.
+`/self-improve` composes a run from its spec and starts it as a background job. The run holds a lock on its directory, so two jobs never advance one run. Each stage stores its result before the next starts: an interrupted round resumes from its stored drafts and evaluations, and the history and trajectory are written together as the round's commit point before the evolve branch moves. The automatic pipeline adds a generation's record, `auto.json` in its run directory, once the apply settled; a generation without one is unfinished.
 
 | Source | Responsibility |
 |---|---|
 | [`src/index.ts`](src/index.ts), [`src/command.ts`](src/command.ts) | The plugin entry, the command, run composition, and background jobs |
+| [`src/auto.ts`](src/auto.ts), [`src/bootstrap.ts`](src/bootstrap.ts), [`src/template.ts`](src/template.ts) | The automatic pipeline, its generations and summary, and the starter run it creates |
+| [`src/apply.ts`](src/apply.ts) | Apply, backups, and undo against the live configuration |
+| [`src/auto-schedule.ts`](src/auto-schedule.ts) | The daily schedule, its checks, and its state file |
 | [`src/loop.ts`](src/loop.ts) | Baseline, calibration, rounds, and held-out measurement |
 | [`src/schedule.ts`](src/schedule.ts), [`src/history.ts`](src/history.ts), [`src/selection.ts`](src/selection.ts), [`src/calibrate.ts`](src/calibrate.ts) | Edit budget, history and directives, admissibility, noise band |
 | [`src/critic.ts`](src/critic.ts), [`src/roles.ts`](src/roles.ts), [`src/model.ts`](src/model.ts) | Reviewer, analyst, proposer, and their model requests |
@@ -249,20 +309,38 @@ Each evaluation runs one Session tree per task and trial: a full reference run m
 
 Every trial is an independent runtime; nothing carries between trials or into the operator's Sessions.
 
+### Applied configuration
+
+#### What the model sees
+
+After an apply, the operator's own Sessions see the result as ordinary configuration: the managed section of the user-global `AGENTS.md`, its two HTML comment marker lines included, among the user-global instructions; the applied skills in the user skill catalog; and the settings the overlay's entries change. Nothing else the plugin writes reaches a model.
+
+#### Token effect
+
+The applied instructions and skill descriptions add their text to every Session's instructions and skill catalog, plus about 40 tokens of section markers; overlay settings change what they govern, such as when compaction runs.
+
+#### KV Cache effect
+
+A changed instructions section or skill catalog changes the system-level prefix of Sessions that load it, so a Session started after an apply builds a new prefix cache; an open Session that reloads the change does so on its next request.
+
 ## Known Limitations and Deferred Work
 
 <a id="known-limitations-and-deferred-work"></a>
 
 - **Only configuration evolves** — candidates change the overlay's listed settings, instructions, and skills; plugin code, other configuration, tool descriptions, and the agent loop stay out of reach.
-- **Unattended trials** — the trial profile and the policy patches alone decide what a trial may do, and check commands run on the host through the subprocess provider. The dsh sandbox confines a trial's file writes, not its reads or network access.
+- **Unattended trials** — the trial profile and the policy patches alone decide what a trial may do, and check commands run on the host through the subprocess provider. The dsh sandbox confines a trial's file writes, not its reads or network access. The starter suite's checks import and test the code a trial wrote, so that code runs on the host without the sandbox.
+- **Applied overlays are measured elsewhere** — trials measure an overlay on the trial profile, `sdk` by default, while an apply writes it into the home patch layer of every profile. An entry a profile composes per agent preset, such as compaction or a tool in the Web and desktop profiles, may meet only a disabled host row and change nothing, and a `config` replaces the whole configuration a profile's bundles give that entry, such as the system prompt's persona prefix. The summary names every overlay entry an apply writes.
+- **Auto-apply follows the run's rule** — the pipeline applies any final incumbent that is an accepted candidate, including one accepted within the noise band for a token saving or a new structural component; the held-out scores are reported, not used to decide.
+- **Generations start fresh** — each generation measures its baseline again and starts with an empty edit history and prune set.
 - **Cost needs exact usage** — a trial whose turns cannot prove their token usage reports none; when no trial of an evaluation reports tokens, the cost change is 0 and the cost rule admits any gain above the band.
 - **The incumbent is measured once** — candidates are compared with its stored evaluation, and the floor follows the best score so far, so an equally good harness clears it less often as a run proceeds.
 - **One-measurement calibration** — a bootstrap over few trials per task misses run-to-run variance and underestimates the band; calibrate with repeats.
 - **Few-repeat spread** — the `spread` of two or three evaluations is itself one noisy draw, and identical scores give a band of 0, which counts every gain as real.
 - **Sequential candidates** — a round drafts and measures its candidates one after another; `trial.concurrency` parallelizes trials within one measurement.
 - **Deferred reference parts** — per-task digests, the prediction scoreboard, and re-adjudication of stored rounds are not implemented.
-- **Command only** — runs start from `/self-improve` in compositions with background jobs; there is no model tool.
-- **No recorded-session snapshot** — the command's transcript, its `command/run` and `command/done` pair, has no recorded-session snapshot; the Web snapshot lane can record one. `tests/loader-composition.spec.ts` covers the command through a real composition, and `tests/real-runtime.e2e.ts` measures each trial in a fresh `dsh` runtime against a local stand-in model endpoint.
+- **Command only** — runs start from `/self-improve` or the schedule it turns on, in compositions with background jobs; there is no model tool.
+- **Scheduled runs need their owner** — a scheduled job belongs to its owner session, so the schedule waits while that session has no live agent in the dsh process, and disposing that agent cancels a running job.
+- **No recorded-session snapshot** — the command's transcript, its `command/run` and `command/done` pair, has no recorded-session snapshot; the Web snapshot lane can record one. `tests/loader-composition.spec.ts` covers the command through a real composition, including the automatic pipeline on the starter run, and `tests/real-runtime.e2e.ts` measures each trial in a fresh `dsh` runtime against a local stand-in model endpoint.
 
 <a id="dev-note"></a>
 ### Dev Note

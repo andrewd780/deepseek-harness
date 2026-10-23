@@ -90,7 +90,7 @@ export interface Config {
     minIntervalHours?: number
     /** Least free, inactive, and speculative memory `vm_stat` reports, in GiB; 0 skips the check. */
     minFreeMemoryGiB?: number
-    /** Hours after the start time in which a run may still start; 0 has no limit. */
+    /** Hours after the start time in which a missed run may still start; 0 allows it until the next start time. */
     windowHours?: number
     /** Minutes between two checks. */
     checkIntervalMinutes?: number

@@ -34,17 +34,17 @@ import type { ProcessRunner } from './process.ts'
 
 /** The plugin settings of the schedule. */
 export interface ScheduleSettings {
-  /** Whether the schedule is on when the command never set it. */
+  /** Whether scheduled runs start, unless `/self-improve schedule on` or `off` set it. */
   readonly enabled: boolean
-  /** Local start time, `HH:MM`, when the command never set one. */
+  /** Local start time, `HH:MM` in 24-hour time, unless `/self-improve schedule on HH:MM` set one. */
   readonly time: string
-  /** Least time between two starts. */
+  /** Least hours between two starts. */
   readonly minIntervalHours: number
-  /** Least free, inactive, and speculative memory, in GiB (2^30 bytes); 0 skips the check. */
+  /** Least free, inactive, and speculative memory `vm_stat` reports, in GiB (2^30 bytes); 0 skips the check. */
   readonly minFreeMemoryGiB: number
-  /** Hours after the start time in which a run may still start; 0 has no limit. */
+  /** Hours after the start time in which a missed run may still start; 0 allows it until the next start time. */
   readonly windowHours: number
-  /** Time between two checks. */
+  /** Minutes between two checks. */
   readonly checkIntervalMinutes: number
 }
 

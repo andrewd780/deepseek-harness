@@ -11,8 +11,11 @@
  * next pipeline writes `run-<n>.json`, a copy of `run.json` named
  * `<name>-<n>` whose evolve branch starts from the previous generation's
  * branch, so each generation measures and improves the previous one's
- * result. A generation is finished once its record, `auto.json` in its run
- * directory, exists.
+ * result; after an undone result, the next generation starts from that
+ * generation's baseline instead. A generation is finished once its record,
+ * `auto.json` in its run directory, exists; an apply that failed leaves no
+ * record, so the next pipeline retries the apply before anything else, and
+ * the pipeline never applies a result whose newest apply was undone.
  *
  * @module @deepseek-ai/dsh-experimental-self-improve/auto
  */

@@ -16,7 +16,9 @@ const route: StarterRoute = { provider: 'ollama', model: 'qwen38-27b-abliterated
 /** Runs a check command on the host's Node, like the subprocess runner does with `node` on the PATH. */
 const node: CommandRunner = async (argv, cwd, timeoutMs) => await new Promise((resolve) => {
   const [program, ...args] = argv
-  execFile(program === 'node' ? process.execPath : program, args, { cwd, timeout: timeoutMs }, (error) =>{  resolve(error === null) })
+  execFile(program === 'node' ? process.execPath : program, args, { cwd, timeout: timeoutMs }, (error) => {
+    resolve(error === null)
+  })
 })
 
 let root = ''

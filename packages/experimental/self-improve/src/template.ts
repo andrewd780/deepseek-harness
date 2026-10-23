@@ -406,8 +406,8 @@ if (!caught) fail('the tests still pass on the old topScores')`,
   {
     id: 'readme-option',
     split: 'heldout',
-    prompt: 'tidy now has a --dry-run option that prints the formatted output instead of writing it. Document it in README.md, following docs/STYLE.md.',
-    files: { 'docs/STYLE.md': STYLE, 'README.md': TIDY_README },
+    prompt: 'tidy now has a --dry-run option that prints the formatted output instead of writing it. Document it in README.md, following the rules in STYLE.md.',
+    files: { 'STYLE.md': STYLE, 'README.md': TIDY_README },
     checks: [
       {
         script: `const lines = read('README.md').split('\\n')

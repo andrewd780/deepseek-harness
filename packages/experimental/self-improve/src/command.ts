@@ -75,6 +75,7 @@ export interface AutoSettings {
   readonly directory: string
   /** Provider key of the trials' and the search roles' route, written into a new run. */
   readonly provider: string
+  /** Model of the trials and the search roles, written into a new run. */
   readonly model: string
   /** OpenAI-compatible base URL a new run's trials route to. */
   readonly baseUrl: string
@@ -88,7 +89,7 @@ export interface AutoSettings {
 
 /** The plugin configuration with every default filled. */
 export interface CommandSettings {
-  /** Run directories, relative to the repository root. */
+  /** Run directories, relative to the repository root; a `.gitignore` excluding everything is written when absent. */
   readonly runsDirectory: string
   /** Absolute parent of each trial's disposable workspace and homes; empty uses the operating system's temporary directory. */
   readonly scratchDirectory: string
@@ -98,11 +99,13 @@ export interface CommandSettings {
   readonly processGraceMs: number
   /** Bytes kept of each process output stream. */
   readonly maxOutputBytes: number
-  /** Whether the automatic pipeline applies an accepted result to the live configuration. */
+  /** Whether the automatic pipeline writes an accepted result into the live configuration, after a backup. */
   readonly autoApply: boolean
+  /** The automatic run's location, the route a new run is created with, and its calibration. */
   readonly auto: AutoSettings
+  /** The automatic pipeline's daily schedule. */
   readonly schedule: ScheduleSettings
-  /** The Harness home applies write into and the plugin keeps its state under; empty is the running profile's home. */
+  /** The Harness home that applies write `AGENTS.md` and `skills/` into, holding the plugin's state; empty is the running profile's. */
   readonly home: string
   /** The patch layer applies add overlay entries to; empty is `<home>/cordis.patch.yml`, which every profile applies last. */
   readonly overlayPatch: string
@@ -289,7 +292,9 @@ class SelfImprove {
     }
     const jobs = this.jobs()
     const narration = new Narration()
-    const opened = await this.openSpec(invocation, spec, (line) =>{  narration.write(line) })
+    const opened = await this.openSpec(invocation, spec, (line) => {
+      narration.write(line)
+    })
     const job = this.start(jobs, {
       label: `self-improve ${action} ${opened.spec.name}`,
       owner: invocation.agent.id,
